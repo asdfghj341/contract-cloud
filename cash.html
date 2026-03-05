@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>雲端合約分次請款管理系統</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap');
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            background-color: #f1f5f9;
+        }
+        .status-alert {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.05); opacity: 0.8; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background-color: #cbd5e1;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+    <div class="max-w-7xl mx-auto">
+        <!-- 頂部標題與同步狀態 -->
+        <div class="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
+            <div>
+                <div class="flex items-center gap-2 mb-1">
+                    <h1 class="text-3xl font-bold text-slate-800">雲端合約請款管理</h1>
+                    <span id="cloud-status" class="flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-200 text-slate-500 text-[10px] font-bold">
+                        <i data-lucide="cloud-off" class="w-3 h-3"></i> 離線中
+                    </span>
+                </div>
+                <p class="text-slate-500">跨裝置即時同步，追蹤多階段收付款</p>
+            </div>
+            <div class="flex gap-2">
+                <button onclick="openModal()" class="flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-xl font-medium transition-all shadow-lg shadow-indigo-200">
+                    <i data-lucide="plus" class="w-5 h-5"></i>
+                    新增合約案
+                </button>
+            </div>
+        </div>
+
+        <!-- 數據面板 -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                <div class="flex items-center gap-4">
+                    <div class="p-3 bg-indigo-50 text-indigo-600 rounded-xl">
+                        <i data-lucide="layers" class="w-6 h-6"></i>
+                    </div>
+                    <div>
+                        <p class="text-sm text-slate-500 font-medium">總案件數</p>
+                        <p id="stat-total-count" class="text-2xl font-bold text-slate-800">0</p>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                <div class="flex items-center gap-4">
+                    <div class="p-3 bg-rose-50 text-rose-600 rounded-xl">
+                        <i data-lucide="alert-triangle" class="w-6 h-6"></i>
+                    </div>
+                    <div>
+                        <p class="text-sm text-slate-500 font-medium">需向業主請款</p>
+                        <p id="stat-pending-alerts" class="text-2xl font-bold text-rose-600">0</p>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                <div class="flex items-center gap-4">
+                    <div class="p-3 bg-emerald-50 text-emerald-600 rounded-xl">
+                        <i data-lucide="trending-up" class="w-6 h-6"></i>
+                    </div>
+                    <div>
+                        <p class="text-sm text-slate-500 font-medium">總合約資產</p>
+                        <p id="stat-total-amount" class="text-2xl font-bold text-slate-800">$0</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 合約清單 -->
+        <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+            <div class="overflow-x-auto">
+                <table class="w-full text-left border-collapse">
+                    <thead>
+                        <tr class="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
+                            <th class="px-6 py-4 font-bold">合約案件資訊</th>
+                            <th class="px-6 py-4 font-bold border-l border-slate-100">業主請款進度</th>
+                            <th class="px-6 py-4 font-bold border-l border-slate-100">廠商請款進度</th>
+                            <th class="px-6 py-4 font-bold text-center border-l border-slate-100">警示</th>
+                            <th class="px-6 py-4 font-bold text-right">管理</th>
+                        </tr>
+                    </thead>
+                    <tbody id="contract-list" class="divide-y divide-slate-100">
+                        <!-- 動態生成內容 -->
+                    </tbody>
+                </table>
+            </div>
+            <div id="empty-state" class="hidden py-24 text-center">
+                <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-slate-100 text-slate-300 mb-4">
+                    <i data-lucide="folder-open" class="w-8 h-8"></i>
+                </div>
+                <p class="text-slate-400 font-medium">載入中或尚無合約資料...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- 合約編輯彈窗 -->
+    <div id="modal" class="fixed inset-0 bg-slate-900/60 hidden items-center justify-center z-50 p-4 backdrop-blur-sm">
+        <div class="bg-white rounded-3xl w-full max-w-5xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div class="p-6 border-b flex justify-between items-center bg-white shrink-0">
+                <div>
+                    <h2 id="modal-title" class="text-xl font-bold text-slate-800">編輯合約案件</h2>
+                    <p class="text-sm text-slate-500">雲端同步模式：所有變更將即時儲存</p>
+                </div>
+                <button onclick="closeModal()" class="p-2 hover:bg-slate-100 rounded-full transition-colors">
+                    <i data-lucide="x" class="w-6 h-6 text-slate-400"></i>
+                </button>
+            </div>
+
+            <div class="flex-1 overflow-y-auto p-6 space-y-8 custom-scrollbar">
+                <input type="hidden" id="edit-id">
+                
+                <div class="grid grid-cols-1 gap-4">
+                    <div class="group">
+                        <label class="block text-sm font-bold text-slate-700 mb-2">合約案件名稱 <span class="text-rose-500">*</span></label>
+                        <input type="text" id="contract-name" required class="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all" placeholder="輸入專案或合約名稱">
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <!-- 業主區塊 -->
+                    <div class="space-y-4">
+                        <div class="flex items-center justify-between pb-2 border-b-2 border-indigo-100">
+                            <h3 class="font-bold text-indigo-700 flex items-center gap-2">
+                                <i data-lucide="user-check" class="w-5 h-5"></i> 業主 (收款端)
+                            </h3>
+                        </div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div class="col-span-1">
+                                <label class="block text-xs font-bold text-slate-500 mb-1 uppercase">業主名稱</label>
+                                <input type="text" id="owner-name" class="w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none" placeholder="業主公司">
+                            </div>
+                            <div class="col-span-1">
+                                <label class="block text-xs font-bold text-slate-500 mb-1 uppercase">業主合約總額</label>
+                                <input type="number" id="owner-total" class="w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none" placeholder="0">
+                            </div>
+                        </div>
+                        <div class="bg-indigo-50/50 p-4 rounded-2xl space-y-3">
+                            <div class="flex justify-between items-center mb-2">
+                                <span class="text-xs font-bold text-indigo-600 uppercase">請款明細 (收入)</span>
+                                <button type="button" onclick="addBillingRow('owner')" class="text-xs flex items-center gap-1 bg-white px-2 py-1 rounded border border-indigo-200 text-indigo-600 hover:bg-indigo-600 hover:text-white transition-all">
+                                    <i data-lucide="plus-circle" class="w-3 h-3"></i> 新增階段
+                                </button>
+                            </div>
+                            <div id="owner-billing-list" class="space-y-2"></div>
+                        </div>
+                    </div>
+
+                    <!-- 廠商區塊 -->
+                    <div class="space-y-4">
+                        <div class="flex items-center justify-between pb-2 border-b-2 border-orange-100">
+                            <h3 class="font-bold text-orange-700 flex items-center gap-2">
+                                <i data-lucide="truck" class="w-5 h-5"></i> 廠商 (支出端)
+                            </h3>
+                        </div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div class="col-span-1">
+                                <label class="block text-xs font-bold text-slate-500 mb-1 uppercase">主要廠商</label>
+                                <input type="text" id="vendor-name" class="w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none" placeholder="廠商名稱">
+                            </div>
+                            <div class="col-span-1">
+                                <label class="block text-xs font-bold text-slate-500 mb-1 uppercase">發包總額</label>
+                                <input type="number" id="vendor-total" class="w-full px-3 py-2 bg-slate-50 border rounded-lg outline-none" placeholder="0">
+                            </div>
+                        </div>
+                        <div class="bg-orange-50/50 p-4 rounded-2xl space-y-3">
+                            <div class="flex justify-between items-center mb-2">
+                                <span class="text-xs font-bold text-orange-600 uppercase">請款明細 (支出)</span>
+                                <button type="button" onclick="addBillingRow('vendor')" class="text-xs flex items-center gap-1 bg-white px-2 py-1 rounded border border-orange-200 text-orange-600 hover:bg-orange-600 hover:text-white transition-all">
+                                    <i data-lucide="plus-circle" class="w-3 h-3"></i> 新增階段
+                                </button>
+                            </div>
+                            <div id="vendor-billing-list" class="space-y-2"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="p-6 border-t bg-slate-50 flex justify-end gap-3 shrink-0">
+                <button type="button" onclick="closeModal()" class="px-6 py-2.5 font-medium text-slate-600 hover:text-slate-800 transition-colors">取消</button>
+                <button id="save-btn" onclick="saveContract()" class="px-8 py-2.5 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 shadow-lg shadow-indigo-100 transition-all flex items-center gap-2">
+                    <span id="save-text">儲存並同步</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+        import { getFirestore, collection, doc, addDoc, setDoc, deleteDoc, onSnapshot, query } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
+
+        // Firebase 配置 (由環境提供)
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const COLLECTION_NAME = 'contracts';
+
+        // 全域變數
+        let contracts = [];
+        let user = null;
+
+        // UI 元素
+        const contractList = document.getElementById('contract-list');
+        const emptyState = document.getElementById('empty-state');
+        const cloudStatus = document.getElementById('cloud-status');
+
+        // 初始化圖標
+        function updateIcons() {
+            lucide.createIcons();
+        }
+
+        // 格式化貨幣
+        function f(num) {
+            return new Intl.NumberFormat('zh-TW', { style: 'currency', currency: 'TWD', maximumFractionDigits: 0 }).format(num || 0);
+        }
+
+        // 更新同步狀態
+        function setCloudStatus(status) {
+            if (status === 'syncing') {
+                cloudStatus.className = "flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-600 text-[10px] font-bold";
+                cloudStatus.innerHTML = '<i data-lucide="refresh-cw" class="w-3 h-3 animate-spin"></i> 同步中...';
+            } else if (status === 'online') {
+                cloudStatus.className = "flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-600 text-[10px] font-bold";
+                cloudStatus.innerHTML = '<i data-lucide="cloud" class="w-3 h-3"></i> 雲端同步中';
+            } else {
+                cloudStatus.className = "flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-100 text-rose-600 text-[10px] font-bold";
+                cloudStatus.innerHTML = '<i data-lucide="cloud-off" class="w-3 h-3"></i> 連線錯誤';
+            }
+            updateIcons();
+        }
+
+        // 渲染主列表
+        function render() {
+            contractList.innerHTML = '';
+            if (contracts.length === 0) {
+                emptyState.classList.remove('hidden');
+            } else {
+                emptyState.classList.add('hidden');
+                contracts.forEach(c => {
+                    const ownerBilled = (c.owner?.billings || []).reduce((s, b) => s + Number(b.amount || 0), 0);
+                    const vendorBilled = (c.vendor?.billings || []).reduce((s, b) => s + Number(b.amount || 0), 0);
+                    
+                    const ownerPercent = Math.min(Math.round((ownerBilled / (c.owner?.total || 1)) * 100), 100);
+                    const vendorPercent = Math.min(Math.round((vendorBilled / (c.vendor?.total || 1)) * 100), 100);
+
+                    const hasAlert = (c.vendor?.billings?.length > 0) && (c.owner?.billings?.length === 0);
+
+                    const tr = document.createElement('tr');
+                    tr.className = "hover:bg-slate-50 transition-colors group";
+                    tr.innerHTML = `
+                        <td class="px-6 py-5">
+                            <div class="font-bold text-slate-800">${c.name}</div>
+                            <div class="text-[10px] text-slate-400 mt-1 uppercase tracking-tighter">CLOUD-ID: ${c.id.slice(-8)}</div>
+                        </td>
+                        <td class="px-6 py-5 border-l border-slate-50">
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="font-medium text-indigo-600">${c.owner?.name || '未填'}</span>
+                                <span class="text-slate-400">${f(ownerBilled)} / ${f(c.owner?.total)}</span>
+                            </div>
+                            <div class="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                                <div class="bg-indigo-500 h-full transition-all duration-500" style="width: ${ownerPercent}%"></div>
+                            </div>
+                        </td>
+                        <td class="px-6 py-5 border-l border-slate-50">
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="font-medium text-orange-600">${c.vendor?.name || '未填'}</span>
+                                <span class="text-slate-400">${f(vendorBilled)} / ${f(c.vendor?.total)}</span>
+                            </div>
+                            <div class="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                                <div class="bg-orange-400 h-full transition-all duration-500" style="width: ${vendorPercent}%"></div>
+                            </div>
+                        </td>
+                        <td class="px-6 py-5 text-center border-l border-slate-50">
+                            ${hasAlert ? `
+                                <div class="flex flex-col items-center justify-center text-rose-500 status-alert">
+                                    <i data-lucide="alert-circle" class="w-6 h-6"></i>
+                                    <span class="text-[10px] font-black mt-1 uppercase">漏請業主!</span>
+                                </div>
+                            ` : `<i data-lucide="check-circle-2" class="w-6 h-6 text-emerald-400 mx-auto"></i>`}
+                        </td>
+                        <td class="px-6 py-5 text-right">
+                            <div class="flex justify-end gap-1">
+                                <button data-edit-id="${c.id}" class="edit-btn p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all">
+                                    <i data-lucide="edit-3" class="w-5 h-5"></i>
+                                </button>
+                                <button data-delete-id="${c.id}" class="delete-btn p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all">
+                                    <i data-lucide="trash-2" class="w-5 h-5"></i>
+                                </button>
+                            </div>
+                        </td>
+                    `;
+                    contractList.appendChild(tr);
+                });
+            }
+
+            // 重新綁定事件
+            document.querySelectorAll('.edit-btn').forEach(btn => {
+                btn.onclick = () => window.editContract(btn.getAttribute('data-edit-id'));
+            });
+            document.querySelectorAll('.delete-btn').forEach(btn => {
+                btn.onclick = () => window.deleteContract(btn.getAttribute('data-edit-id'));
+            });
+
+            updateIcons();
+            updateStats();
+        }
+
+        function updateStats() {
+            document.getElementById('stat-total-count').textContent = contracts.length;
+            const alerts = contracts.filter(c => c.vendor?.billings?.length > 0 && c.owner?.billings?.length === 0).length;
+            document.getElementById('stat-pending-alerts').textContent = alerts;
+            const totalAmount = contracts.reduce((sum, c) => sum + (Number(c.owner?.total) || 0), 0);
+            document.getElementById('stat-total-amount').textContent = f(totalAmount);
+        }
+
+        // Firebase 邏輯
+        const init = async () => {
+            setCloudStatus('syncing');
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Auth failed:", error);
+                setCloudStatus('error');
+            }
+        };
+
+        onAuthStateChanged(auth, (u) => {
+            user = u;
+            if (user) {
+                setCloudStatus('online');
+                // 訂閱資料更新
+                const q = query(collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME));
+                onSnapshot(q, (snapshot) => {
+                    contracts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    render();
+                }, (error) => {
+                    console.error("Firestore error:", error);
+                    setCloudStatus('error');
+                });
+            }
+        });
+
+        // 暴露出全域方法供 HTML 調用
+        window.saveContract = async () => {
+            if (!user) return;
+            const name = document.getElementById('contract-name').value;
+            if (!name) return alert('請輸入名稱');
+
+            const id = document.getElementById('edit-id').value;
+            const saveBtn = document.getElementById('save-btn');
+            const saveText = document.getElementById('save-text');
+
+            saveBtn.disabled = true;
+            saveText.innerText = '同步中...';
+
+            const getBillings = (type) => {
+                const rows = document.querySelectorAll(`.billing-row[data-type="${type}"]`);
+                return Array.from(rows).map(row => ({
+                    date: row.querySelector('.row-date').value,
+                    amount: row.querySelector('.row-amount').value,
+                    note: row.querySelector('.row-note').value
+                })).filter(b => b.date || b.amount);
+            };
+
+            const data = {
+                name,
+                owner: {
+                    name: document.getElementById('owner-name').value,
+                    total: Number(document.getElementById('owner-total').value),
+                    billings: getBillings('owner')
+                },
+                vendor: {
+                    name: document.getElementById('vendor-name').value,
+                    total: Number(document.getElementById('vendor-total').value),
+                    billings: getBillings('vendor')
+                },
+                updatedAt: new Date().toISOString()
+            };
+
+            try {
+                if (id) {
+                    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME, id), data);
+                } else {
+                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME), data);
+                }
+                window.closeModal();
+            } catch (e) {
+                alert('儲存失敗：' + e.message);
+            } finally {
+                saveBtn.disabled = false;
+                saveText.innerText = '儲存並同步';
+            }
+        };
+
+        window.deleteContract = async (id) => {
+            if (!user) return;
+            if (confirm('確定要從雲端刪除此合約嗎？')) {
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME, id));
+            }
+        };
+
+        window.addBillingRow = (type, data = { date: '', amount: '', note: '' }) => {
+            const container = document.getElementById(`${type}-billing-list`);
+            const id = Math.random().toString(36).substr(2, 9);
+            const div = document.createElement('div');
+            div.className = "billing-row grid grid-cols-12 gap-2 items-center bg-white p-2 rounded-lg shadow-sm border border-slate-100";
+            div.setAttribute('data-type', type);
+            div.id = `row-${id}`;
+            div.innerHTML = `
+                <div class="col-span-4"><input type="date" value="${data.date}" class="row-date w-full text-xs px-2 py-1 border rounded outline-none"></div>
+                <div class="col-span-4"><input type="number" value="${data.amount}" placeholder="金額" class="row-amount w-full text-xs px-2 py-1 border rounded outline-none"></div>
+                <div class="col-span-3"><input type="text" value="${data.note || ''}" placeholder="註記" class="row-note w-full text-xs px-2 py-1 border rounded outline-none"></div>
+                <div class="col-span-1 text-center"><button type="button" onclick="document.getElementById('row-${id}').remove()" class="text-slate-300 hover:text-rose-500"><i data-lucide="trash-2" class="w-3 h-3"></i></button></div>
+            `;
+            container.appendChild(div);
+            updateIcons();
+        };
+
+        window.openModal = (id = null) => {
+            document.getElementById('edit-id').value = id || '';
+            document.getElementById('modal-title').textContent = id ? '編輯雲端合約' : '新增雲端合約';
+            document.getElementById('owner-billing-list').innerHTML = '';
+            document.getElementById('vendor-billing-list').innerHTML = '';
+            
+            if (id) {
+                const c = contracts.find(x => x.id === id);
+                document.getElementById('contract-name').value = c.name;
+                document.getElementById('owner-name').value = c.owner?.name || '';
+                document.getElementById('owner-total').value = c.owner?.total || '';
+                document.getElementById('vendor-name').value = c.vendor?.name || '';
+                document.getElementById('vendor-total').value = c.vendor?.total || '';
+                (c.owner?.billings || []).forEach(b => window.addBillingRow('owner', b));
+                (c.vendor?.billings || []).forEach(b => window.addBillingRow('vendor', b));
+            } else {
+                document.getElementById('contract-name').value = '';
+                document.getElementById('owner-name').value = '';
+                document.getElementById('owner-total').value = '';
+                document.getElementById('vendor-name').value = '';
+                document.getElementById('vendor-total').value = '';
+                window.addBillingRow('owner');
+                window.addBillingRow('vendor');
+            }
+            document.getElementById('modal').classList.remove('hidden');
+            document.getElementById('modal').classList.add('flex');
+            updateIcons();
+        };
+
+        window.closeModal = () => {
+            document.getElementById('modal').classList.add('hidden');
+            document.getElementById('modal').classList.remove('flex');
+        };
+
+        init();
+    </script>
+</body>
+</html>
