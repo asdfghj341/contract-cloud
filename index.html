@@ -91,13 +91,32 @@
             const [showModal, setShowModal] = useState(null);
 
             const [formData, setFormData] = useState({
-                name: '', owner: '', totalAmount: '', retentionRate: 10, retentionExpiry: '',
-                amount: '', invoiceNo: '', invoiceDate: '', hasRetention: false, type: 'owner', vendor: ''
+                name: '', owner: '', 
+                amountExclTax: '', tax: '', amountInclTax: '', 
+                retentionRate: 10, retentionExpiry: '',
+                invoiceNo: '', invoiceDate: '', hasRetention: false, type: 'owner', vendor: ''
             });
 
             const showToast = (msg, type = "success") => {
                 setToast({ msg, type });
                 setTimeout(() => setToast(null), 3000);
+            };
+
+            // 金額自動計算邏輯
+            const handlePriceChange = (field, value) => {
+                const numVal = Number(value) || 0;
+                let newFormData = { ...formData, [field]: value };
+
+                if (field === 'amountExclTax') {
+                    const calcTax = Math.round(numVal * 0.05);
+                    newFormData.tax = calcTax.toString();
+                    newFormData.amountInclTax = (numVal + calcTax).toString();
+                } else if (field === 'tax') {
+                    const excl = Number(formData.amountExclTax) || 0;
+                    newFormData.amountInclTax = (excl + numVal).toString();
+                }
+
+                setFormData(newFormData);
             };
 
             // 1. 認證處理
@@ -156,9 +175,8 @@
                     setAuthProcessing(true);
                     sessionStorage.setItem('pending_login', 'true');
                     const isMessenger = /Line|FBAN|FBAV|Instagram/i.test(navigator.userAgent);
-                    if (isMessenger) {
-                        await signInWithRedirect(auth, googleProvider);
-                    } else {
+                    if (isMessenger) await signInWithRedirect(auth, googleProvider);
+                    else {
                         const res = await signInWithPopup(auth, googleProvider);
                         setUser(res.user);
                         setAuthProcessing(false);
@@ -174,12 +192,21 @@
             // 核心運算邏輯
             const stats = useMemo(() => {
                 return contracts.map(c => {
-                    const ownerPaid = ownerPayments.filter(p => p.contractId === c.id).reduce((s, p) => s + Number(p.amount), 0);
-                    const vendorPaid = vendorPayments.filter(p => p.contractId === c.id).reduce((s, p) => s + Number(p.amount), 0);
-                    // 根據比例抓取總額的金額
-                    const ret = (Number(c.totalAmount) * (c.hasRetention ? Number(c.retentionRate) : 0)) / 100;
+                    const ownerPaid = ownerPayments.filter(p => p.contractId === c.id).reduce((s, p) => s + Number(p.amountInclTax || p.amount), 0);
+                    const vendorPaid = vendorPayments.filter(p => p.contractId === c.id).reduce((s, p) => s + Number(p.amountInclTax || p.amount), 0);
+                    
+                    const totalIncl = Number(c.amountInclTax || c.totalAmount);
+                    const ret = (totalIncl * (c.hasRetention ? Number(c.retentionRate) : 0)) / 100;
                     const isExp = c.hasRetention && c.retentionExpiry && new Date(c.retentionExpiry) <= new Date(Date.now() + 30*24*60*60*1000);
-                    return { ...c, ownerPaid, vendorPaid, retentionAmount: ret, isExpiring: isExp };
+                    
+                    return { 
+                        ...c, 
+                        totalIncl, 
+                        ownerPaid, 
+                        vendorPaid, 
+                        retentionAmount: ret, 
+                        isExpiring: isExp 
+                    };
                 });
             }, [contracts, ownerPayments, vendorPayments]);
 
@@ -193,7 +220,9 @@
                     const payload = {
                         name: formData.name,
                         owner: formData.owner,
-                        totalAmount: Number(formData.totalAmount) || 0,
+                        amountExclTax: Number(formData.amountExclTax) || 0,
+                        tax: Number(formData.tax) || 0,
+                        amountInclTax: Number(formData.amountInclTax) || 0,
                         hasRetention: formData.hasRetention,
                         retentionRate: formData.hasRetention ? Number(formData.retentionRate) : 0,
                         retentionExpiry: formData.hasRetention ? formData.retentionExpiry : '',
@@ -202,18 +231,16 @@
                     };
 
                     if (showModal.contractId) {
-                        // 更新模式
                         await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'contracts', showModal.contractId), payload);
                         showToast("合約內容已更新");
                     } else {
-                        // 新增模式
                         payload.createdAt = Date.now();
                         await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'contracts'), payload);
                         showToast("新合約已同步至雲端");
                     }
                     
                     setShowModal(null);
-                    setFormData({ name: '', owner: '', totalAmount: '', retentionRate: 10, retentionExpiry: '', hasRetention: false, type: 'owner', vendor: '' });
+                    setFormData({ name: '', owner: '', amountExclTax: '', tax: '', amountInclTax: '', retentionRate: 10, retentionExpiry: '', hasRetention: false, type: 'owner', vendor: '' });
                 } catch (err) {
                     setError("操作失敗: " + err.message);
                 } finally {
@@ -229,7 +256,9 @@
                     const colName = isOwner ? 'ownerPayments' : 'vendorPayments';
                     await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, colName), {
                         contractId: showModal.contractId,
-                        amount: Number(formData.amount) || 0,
+                        amountExclTax: Number(formData.amountExclTax) || 0,
+                        tax: Number(formData.tax) || 0,
+                        amountInclTax: Number(formData.amountInclTax) || 0,
                         invoiceNo: formData.invoiceNo || '',
                         invoiceDate: formData.invoiceDate || '',
                         vendor: isOwner ? undefined : formData.vendor,
@@ -237,7 +266,7 @@
                     });
                     showToast(isOwner ? "業主收款已入帳" : "廠商付款已紀錄");
                     setShowModal(null);
-                    setFormData({ ...formData, amount: '', invoiceNo: '', invoiceDate: '', vendor: '' });
+                    setFormData({ ...formData, amountExclTax: '', tax: '', amountInclTax: '', invoiceNo: '', invoiceDate: '', vendor: '' });
                 } catch (err) {
                     setError("儲存款項失敗: " + err.message);
                 } finally {
@@ -254,7 +283,9 @@
                 setFormData({
                     name: contract.name,
                     owner: contract.owner,
-                    totalAmount: contract.totalAmount,
+                    amountExclTax: contract.amountExclTax || '',
+                    tax: contract.tax || '',
+                    amountInclTax: contract.amountInclTax || contract.totalAmount || '',
                     hasRetention: contract.hasRetention,
                     retentionRate: contract.retentionRate || 10,
                     retentionExpiry: contract.retentionExpiry || '',
@@ -263,7 +294,7 @@
                 setShowModal({ type: 'contract', contractId: contract.id });
             };
 
-            // --- UI 渲染控制 ---
+            // --- UI 渲染 ---
 
             const isPending = sessionStorage.getItem('pending_login') === 'true';
             if (authProcessing || isPending) return (
@@ -309,7 +340,7 @@
                             </div>
                         </div>
                         <div className="flex gap-4">
-                            <button onClick={() => { setFormData({name:'', owner:'', totalAmount:'', retentionRate: 10, retentionExpiry: '', hasRetention: false, type: 'owner'}); setShowModal({ type: 'contract' }); }} className="bg-blue-600 text-white px-8 py-4 rounded-2xl flex items-center gap-2 shadow-2xl shadow-blue-100 font-black transition-all hover:bg-blue-700 active:scale-95"><Icon name="plus" size={24} /> 新增合約</button>
+                            <button onClick={() => { setFormData({name:'', owner:'', amountExclTax:'', tax:'', amountInclTax:'', retentionRate: 10, retentionExpiry: '', hasRetention: false, type: 'owner'}); setShowModal({ type: 'contract' }); }} className="bg-blue-600 text-white px-8 py-4 rounded-2xl flex items-center gap-2 shadow-2xl shadow-blue-100 font-black transition-all hover:bg-blue-700 active:scale-95"><Icon name="plus" size={24} /> 新增合約</button>
                             <button onClick={() => signOut(auth).then(() => window.location.reload())} className="bg-white text-slate-400 border-2 border-slate-100 px-6 py-4 rounded-2xl font-black active:scale-95 transition-all">登出</button>
                         </div>
                     </header>
@@ -325,14 +356,14 @@
                     </div>
 
                     <main className="max-w-7xl mx-auto space-y-12">
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 font-black">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 font-black text-slate-800">
                             <div className="bg-white p-10 rounded-[3rem] shadow-sm flex items-center gap-6 transition-transform hover:scale-[1.02]">
                                 <div className="p-6 bg-indigo-600 text-white rounded-3xl shadow-xl shadow-indigo-100"><Icon name="dollar-sign" size={36} /></div>
-                                <div><p className="text-[11px] text-slate-400 font-black uppercase tracking-[0.2em] mb-1">年度合約總額</p><p className="text-3xl text-slate-800 tracking-tighter">${filteredStats.reduce((a, b) => a + b.totalAmount, 0).toLocaleString()}</p></div>
+                                <div><p className="text-[11px] text-slate-400 font-black uppercase tracking-[0.2em] mb-1">年度合約總額 (含稅)</p><p className="text-3xl tracking-tighter">${filteredStats.reduce((a, b) => a + b.totalIncl, 0).toLocaleString()}</p></div>
                             </div>
                             <div className="bg-white p-10 rounded-[3rem] shadow-sm flex items-center gap-6 transition-transform hover:scale-[1.02]">
                                 <div className="p-6 bg-emerald-600 text-white rounded-3xl shadow-xl shadow-emerald-100"><Icon name="check-circle" size={36} /></div>
-                                <div><p className="text-[11px] text-slate-400 font-black uppercase tracking-[0.2em] mb-1">業主累計付款</p><p className="text-3xl text-emerald-600 tracking-tighter">${filteredStats.reduce((a, b) => a + b.ownerPaid, 0).toLocaleString()}</p></div>
+                                <div><p className="text-[11px] text-slate-400 font-black uppercase tracking-[0.2em] mb-1">業主累計付款 (含稅)</p><p className="text-3xl text-emerald-600 tracking-tighter">${filteredStats.reduce((a, b) => a + b.ownerPaid, 0).toLocaleString()}</p></div>
                             </div>
                             <div className="bg-white p-10 rounded-[3rem] shadow-sm flex items-center gap-6 transition-transform hover:scale-[1.02]">
                                 <div className="p-6 bg-amber-600 text-white rounded-3xl shadow-xl shadow-amber-100"><Icon name="clock" size={36} /></div>
@@ -342,25 +373,28 @@
 
                         <div className="bg-white rounded-[3rem] shadow-sm overflow-hidden border-2 border-slate-50">
                             <div className="overflow-x-auto">
-                                <table className="w-full text-left border-collapse min-w-[900px]">
+                                <table className="w-full text-left border-collapse min-w-[1000px]">
                                     <thead className="bg-slate-50/50 text-[10px] font-black uppercase text-slate-400 border-b tracking-[0.25em]">
                                         <tr>
                                             <th className="px-12 py-8">工程案名 / 業主公司</th>
-                                            <th className="px-12 py-8">合約總額</th>
+                                            <th className="px-12 py-8">合約總額 (含稅)</th>
                                             <th className="px-12 py-8 text-emerald-600">業主已付</th>
                                             <th className="px-12 py-8 text-blue-600">廠商已付</th>
                                             <th className="px-12 py-8 text-amber-600">保留款額</th>
                                             <th className="px-12 py-8 text-right">管理</th>
                                         </tr>
                                     </thead>
-                                    <tbody className="divide-y divide-slate-100 font-medium">
+                                    <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
                                         {filteredStats.map(item => (
                                             <tr key={item.id} className="hover:bg-slate-50/50 transition-colors group">
                                                 <td className="px-12 py-10">
                                                     <div className="font-black text-slate-800 text-2xl tracking-tight mb-1">{item.name}</div>
                                                     <div className="text-sm text-slate-400 font-bold flex items-center gap-1.5 uppercase"><Icon name="building" size={14} /> {item.owner}</div>
                                                 </td>
-                                                <td className="px-12 py-10 text-lg font-bold text-slate-400 font-mono">${item.totalAmount.toLocaleString()}</td>
+                                                <td className="px-12 py-10">
+                                                    <div className="text-lg font-black text-slate-600 font-mono">${item.totalIncl.toLocaleString()}</div>
+                                                    <div className="text-[10px] text-slate-300 font-bold">未稅: ${Number(item.amountExclTax || 0).toLocaleString()}</div>
+                                                </td>
                                                 <td className="px-12 py-10 font-black text-emerald-600 text-2xl font-mono">${item.ownerPaid.toLocaleString()}</td>
                                                 <td className="px-12 py-10 font-black text-blue-600 text-2xl font-mono">${item.vendorPaid.toLocaleString()}</td>
                                                 <td className="px-12 py-10">
@@ -374,14 +408,14 @@
                                                     )}
                                                 </td>
                                                 <td className="px-12 py-10 text-right flex justify-end gap-3 items-center">
-                                                    <button onClick={() => { setFormData({...formData, amount:'', invoiceNo:'', invoiceDate:'', type: 'owner', vendor: ''}); setShowModal({type:'payment', contractId:item.id}); }} className="p-4 bg-emerald-50 text-emerald-600 rounded-[1.25rem] hover:bg-emerald-600 hover:text-white transition-all shadow-sm active:scale-90" title="記帳"><Icon name="plus" size={28} /></button>
-                                                    <button onClick={() => handleOpenEdit(item)} className="p-4 bg-blue-50 text-blue-600 rounded-[1.25rem] hover:bg-blue-600 hover:text-white transition-all shadow-sm active:scale-90" title="修改合約"><Icon name="pencil" size={28} /></button>
-                                                    <button onClick={() => handleDeleteContract(item.id)} className="p-4 text-slate-200 hover:text-rose-500 hover:bg-rose-50 rounded-[1.25rem] transition-all opacity-0 group-hover:opacity-100 active:scale-90" title="刪除"><Icon name="trash-2" size={28} /></button>
+                                                    <button onClick={() => { setFormData({...formData, amountExclTax:'', tax:'', amountInclTax:'', invoiceNo:'', invoiceDate:'', type: 'owner', vendor: ''}); setShowModal({type:'payment', contractId:item.id}); }} className="p-5 bg-emerald-50 text-emerald-600 rounded-[1.25rem] hover:bg-emerald-600 hover:text-white transition-all shadow-sm active:scale-90"><Icon name="plus" size={32} /></button>
+                                                    <button onClick={() => handleOpenEdit(item)} className="p-5 bg-blue-50 text-blue-600 rounded-[1.25rem] hover:bg-blue-600 hover:text-white transition-all shadow-sm active:scale-90"><Icon name="pencil" size={32} /></button>
+                                                    <button onClick={() => handleDeleteContract(item.id)} className="p-5 text-slate-200 hover:text-rose-500 hover:bg-rose-50 rounded-[1.25rem] transition-all opacity-0 group-hover:opacity-100 active:scale-90"><Icon name="trash-2" size={32} /></button>
                                                 </td>
                                             </tr>
                                         ))}
                                         {filteredStats.length === 0 && (
-                                            <tr><td colSpan="6" className="px-6 py-48 text-center text-slate-200 italic font-black text-3xl tracking-tighter">尚無此年度的合約紀錄</td></tr>
+                                            <tr><td colSpan="6" className="px-6 py-48 text-center text-slate-200 italic font-black text-3xl tracking-tighter">尚無合約紀錄</td></tr>
                                         )}
                                     </tbody>
                                 </table>
@@ -396,79 +430,104 @@
                                     <h3 className="text-2xl">{showModal.type === 'contract' ? (showModal.contractId ? '修改合約內容' : '新建雲端工程合約') : '記錄已入帳/支出款項'}</h3>
                                     <button onClick={() => { if(!isSaving) setShowModal(null); }} className="p-3 text-slate-300 hover:text-slate-600"><Icon name="x" size={28} /></button>
                                 </div>
-                                <div className="p-12 space-y-8">
+                                <div className="p-12 space-y-6">
                                     {showModal.type === 'contract' ? (
                                         <>
-                                            <div className="space-y-2">
-                                                <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">合約案名</label>
-                                                <input type="text" placeholder="例如：101機電維護工程" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[1.25rem] text-lg font-black outline-none focus:border-blue-600 focus:bg-white transition-all shadow-inner" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+                                            <div className="space-y-1">
+                                                <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">工程案名</label>
+                                                <input type="text" className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-[1.25rem] text-lg font-black outline-none focus:border-blue-600 focus:bg-white transition-all shadow-inner" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
                                             </div>
-                                            <div className="space-y-2">
+                                            <div className="space-y-1">
                                                 <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">業主公司</label>
-                                                <input type="text" placeholder="輸入發案公司全名" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[1.25rem] text-lg font-black outline-none focus:border-blue-600 focus:bg-white transition-all shadow-inner" value={formData.owner} onChange={e => setFormData({...formData, owner: e.target.value})} />
+                                                <input type="text" className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-[1.25rem] text-lg font-black outline-none focus:border-blue-600 focus:bg-white transition-all shadow-inner" value={formData.owner} onChange={e => setFormData({...formData, owner: e.target.value})} />
                                             </div>
-                                            <div className="space-y-2">
-                                                <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">合約總金額 (NT$)</label>
-                                                <input type="number" placeholder="0" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[1.25rem] text-xl font-black outline-none focus:border-blue-600 focus:bg-white transition-all shadow-inner font-mono" value={formData.totalAmount} onChange={e => setFormData({...formData, totalAmount: e.target.value})} />
+
+                                            <div className="grid grid-cols-1 gap-4 p-5 bg-slate-100/50 rounded-3xl border-2 border-slate-50">
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">合約金額 (未稅)</label>
+                                                    <input type="number" className="w-full p-4 bg-white border-2 border-slate-100 rounded-2xl text-lg font-black outline-none focus:border-blue-600 font-mono" value={formData.amountExclTax} onChange={e => handlePriceChange('amountExclTax', e.target.value)} placeholder="輸入未稅自動計稅" />
+                                                </div>
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <div className="space-y-1">
+                                                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">稅金 (5%)</label>
+                                                        <input type="number" className="w-full p-4 bg-white border-2 border-slate-100 rounded-2xl text-lg font-black outline-none focus:border-blue-600 font-mono" value={formData.tax} onChange={e => handlePriceChange('tax', e.target.value)} />
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">含稅總計</label>
+                                                        <input type="number" className="w-full p-4 bg-blue-50 border-2 border-blue-100 rounded-2xl text-lg font-black outline-none focus:border-blue-600 font-mono text-blue-700" value={formData.amountInclTax} onChange={e => handlePriceChange('amountInclTax', e.target.value)} />
+                                                    </div>
+                                                </div>
                                             </div>
                                             
-                                            <div className="flex items-center gap-4 p-5 bg-slate-100/50 rounded-3xl border-2 border-slate-50 transition-all cursor-pointer hover:bg-slate-100" onClick={() => setFormData({...formData, hasRetention: !formData.hasRetention, retentionRate: !formData.hasRetention ? 10 : formData.retentionRate})}>
+                                            <div className="flex items-center gap-4 p-5 bg-slate-100/50 rounded-3xl border-2 border-slate-50 transition-all cursor-pointer hover:bg-slate-100" onClick={() => setFormData({...formData, hasRetention: !formData.hasRetention})}>
                                                 <div className={`w-8 h-8 rounded-lg border-2 flex items-center justify-center transition-all ${formData.hasRetention ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white border-slate-200 text-transparent'}`}><Icon name="check" size={16} /></div>
-                                                <span className="font-black text-slate-700 text-base">啟用保留款設定</span>
+                                                <span className="font-black text-slate-700 text-base tracking-widest">啟用保留款設定</span>
                                             </div>
 
                                             {formData.hasRetention && (
                                                 <div className="grid grid-cols-2 gap-6 animate-in">
-                                                    <div className="space-y-2">
-                                                        <label className="text-[10px] font-black text-slate-400 ml-1 uppercase">保留 % (預設10%)</label>
-                                                        <input type="number" placeholder="10" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[1.25rem] font-black outline-none focus:border-blue-600" value={formData.retentionRate} onChange={e => setFormData({...formData, retentionRate: e.target.value})} />
+                                                    <div className="space-y-1">
+                                                        <label className="text-[10px] font-black text-slate-400 ml-1 uppercase">保留 %</label>
+                                                        <input type="number" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[1.25rem] font-black outline-none focus:border-blue-600" value={formData.retentionRate} onChange={e => setFormData({...formData, retentionRate: e.target.value})} />
                                                     </div>
-                                                    <div className="space-y-2">
-                                                        <label className="text-[10px] font-black text-slate-400 ml-1 uppercase">到期日 (可日後修改)</label>
+                                                    <div className="space-y-1">
+                                                        <label className="text-[10px] font-black text-slate-400 ml-1 uppercase">到期日</label>
                                                         <input type="date" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[1.25rem] font-black outline-none focus:border-blue-600 text-sm" value={formData.retentionExpiry} onChange={e => setFormData({...formData, retentionExpiry: e.target.value})} />
                                                     </div>
                                                 </div>
                                             )}
 
                                             <button onClick={handleSaveContract} disabled={isSaving} className="w-full py-6 bg-blue-600 text-white font-black rounded-[2rem] shadow-2xl shadow-blue-100 hover:bg-blue-700 transition-all active:scale-[0.98] mt-4 text-xl tracking-tighter disabled:bg-blue-300">
-                                                {isSaving ? "正在處理中..." : (showModal.contractId ? "確認修改合約" : "確認建立合約")}
+                                                {isSaving ? "處理中..." : (showModal.contractId ? "更新合約資料" : "建立雲端合約")}
                                             </button>
                                         </>
                                     ) : (
                                         <>
                                             <div className="space-y-3">
-                                                <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1 text-center block">款項類別切換</label>
+                                                <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1 text-center block">款項類別</label>
                                                 <div className="flex p-2 bg-slate-100 rounded-[2rem] border border-slate-200">
                                                     <button onClick={() => setFormData({...formData, type: 'owner'})} className={`flex-1 py-4 text-sm font-black rounded-[1.5rem] transition-all ${formData.type === 'owner' ? 'bg-white shadow-md text-emerald-600 scale-105' : 'text-slate-400'}`}>業主收款 (+)</button>
                                                     <button onClick={() => setFormData({...formData, type: 'vendor'})} className={`flex-1 py-4 text-sm font-black rounded-[1.5rem] transition-all ${formData.type === 'vendor' ? 'bg-white shadow-md text-blue-600 scale-105' : 'text-slate-400'}`}>廠商付款 (-)</button>
                                                 </div>
                                             </div>
 
-                                            <div className="space-y-2">
-                                                <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1 text-center block">交易金額 (NT$)</label>
-                                                <input type="number" placeholder="0" className={`w-full p-7 border-4 rounded-[2.5rem] text-4xl font-black outline-none transition-all shadow-inner font-mono text-center ${formData.type === 'owner' ? 'bg-emerald-50 border-emerald-100 text-emerald-600 focus:border-emerald-600' : 'bg-blue-50 border-blue-100 text-blue-600 focus:border-blue-600'}`} onChange={e => setFormData({...formData, amount: e.target.value})} />
+                                            <div className="space-y-4 p-6 bg-slate-50 rounded-[2.5rem] border-2 border-slate-100">
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">交易金額 (未稅)</label>
+                                                    <input type="number" className="w-full p-5 bg-white border-2 border-slate-100 rounded-2xl text-2xl font-black outline-none font-mono text-center" value={formData.amountExclTax} onChange={e => handlePriceChange('amountExclTax', e.target.value)} placeholder="0" />
+                                                </div>
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <div className="space-y-1">
+                                                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">稅金</label>
+                                                        <input type="number" className="w-full p-4 bg-white border-2 border-slate-100 rounded-2xl font-black font-mono text-center" value={formData.tax} onChange={e => handlePriceChange('tax', e.target.value)} />
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">含稅總額</label>
+                                                        <input type="number" className={`w-full p-4 border-2 rounded-2xl font-black font-mono text-center ${formData.type === 'owner' ? 'bg-emerald-50 border-emerald-100 text-emerald-600' : 'bg-blue-50 border-blue-100 text-blue-600'}`} value={formData.amountInclTax} onChange={e => handlePriceChange('amountInclTax', e.target.value)} />
+                                                    </div>
+                                                </div>
                                             </div>
 
                                             {formData.type === 'vendor' && (
                                                 <div className="space-y-2 animate-in">
                                                     <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">廠商名稱</label>
-                                                    <input type="text" placeholder="例如：捷安冷氣工程" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-3xl font-black outline-none focus:border-blue-600" onChange={e => setFormData({...formData, vendor: e.target.value})} />
+                                                    <input type="text" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-2xl font-black outline-none focus:border-blue-600" value={formData.vendor} onChange={e => setFormData({...formData, vendor: e.target.value})} placeholder="輸入下包廠商" />
                                                 </div>
                                             )}
 
                                             <div className="grid grid-cols-2 gap-6">
                                                 <div className="space-y-2">
                                                     <label className="text-[10px] font-black text-slate-400 ml-1">發票號碼</label>
-                                                    <input type="text" placeholder="AB-..." className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-3xl font-black uppercase outline-none focus:border-slate-300" onChange={e => setFormData({...formData, invoiceNo: e.target.value})} />
+                                                    <input type="text" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-3xl font-black uppercase outline-none focus:border-slate-300" value={formData.invoiceNo} onChange={e => setFormData({...formData, invoiceNo: e.target.value})} placeholder="AB-..." />
                                                 </div>
                                                 <div className="space-y-2">
-                                                    <label className="text-[10px] font-black text-slate-400 ml-1">日期</label>
-                                                    <input type="date" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-3xl font-black outline-none focus:border-slate-300 text-xs" onChange={e => setFormData({...formData, invoiceDate: e.target.value})} />
+                                                    <label className="text-[10px] font-black text-slate-400 ml-1">開立日期</label>
+                                                    <input type="date" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-3xl font-black outline-none focus:border-slate-300 text-xs" value={formData.invoiceDate} onChange={e => setFormData({...formData, invoiceDate: e.target.value})} />
                                                 </div>
                                             </div>
                                             
                                             <button onClick={handleSavePayment} disabled={isSaving} className={`w-full py-6 text-white font-black rounded-[2.5rem] shadow-2xl transition-all active:scale-[0.98] mt-4 text-xl ${formData.type === 'owner' ? 'bg-emerald-600 shadow-emerald-100' : 'bg-blue-600 shadow-blue-100'} disabled:bg-slate-300`}>
-                                                {isSaving ? "正在存入雲端..." : "儲存並同步"}
+                                                {isSaving ? "雲端同步中..." : "確認儲存並同步"}
                                             </button>
                                         </>
                                     )}
