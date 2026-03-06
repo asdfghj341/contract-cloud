@@ -16,10 +16,10 @@
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, onAuthStateChanged, signInWithRedirect, getRedirectResult, GoogleAuthProvider, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        window.Firebase = { initializeApp, getAuth, onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut, getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query };
+        window.Firebase = { initializeApp, getAuth, onAuthStateChanged, signInWithRedirect, getRedirectResult, GoogleAuthProvider, signOut, getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query };
     </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap');
@@ -35,7 +35,7 @@
 
     <script type="text/babel">
         const { useState, useMemo, useEffect, useRef } = React;
-        const { initializeApp, getAuth, onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut, getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query } = window.Firebase || {};
+        const { initializeApp, getAuth, onAuthStateChanged, signInWithRedirect, getRedirectResult, GoogleAuthProvider, signOut, getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query } = window.Firebase || {};
 
         // --- Firebase 設定 ---
         const firebaseConfig = {
@@ -51,7 +51,6 @@
         const appId = 'cash-accounting-v1';
         let auth, db, googleProvider;
 
-        // 安全地初始化 Firebase
         try {
             if (window.Firebase) {
                 const app = initializeApp(firebaseConfig);
@@ -80,6 +79,7 @@
             const [ownerPayments, setOwnerPayments] = useState([]);
             const [vendorPayments, setVendorPayments] = useState([]);
             const [isLoading, setIsLoading] = useState(true);
+            const [isAuthenticating, setIsAuthenticating] = useState(true);
             const [error, setError] = useState(null);
 
             const [filterCompany, setFilterCompany] = useState('All');
@@ -94,6 +94,22 @@
 
             useEffect(() => {
                 if (!auth) return;
+
+                // 處理從 Google 重新定向回來的結果
+                getRedirectResult(auth)
+                    .then(() => {
+                        setIsAuthenticating(false);
+                    })
+                    .catch((err) => {
+                        console.error("Redirect Error:", err);
+                        if (err.code === 'auth/unauthorized-domain') {
+                            setError(`網域未授權：請前往 Firebase Console 將「${window.location.hostname}」加入 Authorized domains。`);
+                        } else {
+                            setError(`認證失敗: ${err.message}`);
+                        }
+                        setIsAuthenticating(false);
+                    });
+
                 const unsubscribe = onAuthStateChanged(auth, (u) => {
                     setUser(u);
                     if (u) setError(null);
@@ -134,50 +150,39 @@
             const handleGoogleLogin = async () => {
                 try {
                     setError(null);
-                    await signInWithPopup(auth, googleProvider);
+                    setIsAuthenticating(true);
+                    // 改用 Redirect 方式以解決 LINE/手機瀏覽器攔截彈窗的問題
+                    await signInWithRedirect(auth, googleProvider);
                 } catch (err) {
-                    console.error("登入錯誤:", err);
-                    if (err.code === 'auth/popup-blocked') {
-                        setError("登入視窗被瀏覽器攔截，請允許彈出視窗後重試。");
-                    } else if (err.code === 'auth/configuration-not-found') {
-                        setError("Google 登入功能尚未在 Firebase Console 中啟動。");
-                    } else {
-                        setError(`登入失敗: ${err.message}`);
-                    }
+                    console.error("登入請求失敗:", err);
+                    setError(`登入請求失敗: ${err.message}`);
+                    setIsAuthenticating(false);
                 }
             };
 
             const handleLogout = async () => {
-                try {
-                    await signOut(auth);
-                } catch (err) {
-                    console.error("登出錯誤:", err);
-                }
+                try { await signOut(auth); } catch (err) { console.error(err); }
             };
 
             const stats = useMemo(() => {
                 return contracts.map(contract => {
                     const oPay = ownerPayments
-                        .filter(p => p.contractId === contract.id && p.status === '已收')
+                        .filter(p => p.contractId === contract.id)
                         .reduce((sum, p) => sum + p.amount, 0);
-                    const vPay = vendorPayments
-                        .filter(v => v.contractId === contract.id && v.status === '已付')
-                        .reduce((sum, v) => sum + v.amount, 0);
                     const retentionAmount = (Number(contract.totalAmount) * Number(contract.retentionRate)) / 100;
                     const expiryDate = new Date(contract.retentionExpiry);
                     const isRetentionExpiring = contract.retentionExpiry ? expiryDate <= new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) : false;
 
                     return {
                         ...contract,
-                        ownerPaid: oPay, vendorPaid: vPay, retentionAmount,
+                        ownerPaid: oPay,
+                        retentionAmount,
                         alerts: {
-                            vendorLagging: oPay > vPay && vPay > 0,
-                            ownerLagging: vPay > oPay,
                             retentionExpiring: isRetentionExpiring
                         }
                     };
                 });
-            }, [contracts, ownerPayments, vendorPayments]);
+            }, [contracts, ownerPayments]);
 
             const filteredStats = useMemo(() => {
                 return stats.filter(s => {
@@ -204,16 +209,14 @@
 
             const handleSavePayment = async () => {
                 if (!user || !db) return;
-                const isOwner = formData.type === 'owner';
                 const newPayment = {
                     contractId: showModal.contractId,
                     amount: Number(formData.amount) || 0,
                     invoiceNo: formData.invoiceNo || '',
                     invoiceDate: formData.invoiceDate || '',
-                    status: isOwner ? '已收' : '已付',
+                    status: '已收',
                 };
-                const colName = isOwner ? 'ownerPayments' : 'vendorPayments';
-                await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, colName), newPayment);
+                await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'ownerPayments'), newPayment);
                 setShowModal(null);
             };
 
@@ -223,18 +226,16 @@
             };
 
             // 登入介面
-            if (!user && !isLoading) {
+            if (!user && !isLoading && !isAuthenticating) {
                 return (
                     <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6 animate-in">
                         <div className="bg-white p-10 rounded-3xl shadow-2xl max-w-sm w-full text-center border border-slate-200">
-                            <div className="flex justify-center mb-6 text-blue-600">
-                                <Icon name="building-2" size={64} />
-                            </div>
+                            <div className="flex justify-center mb-6 text-blue-600"><Icon name="building-2" size={64} /></div>
                             <h1 className="text-2xl font-black text-slate-800 mb-2">工程合約記帳系統</h1>
-                            <p className="text-slate-500 mb-8">請使用 Google 帳號登入以開始管理您的工程款項。</p>
+                            <p className="text-slate-500 mb-8 font-medium">請登入以同步雲端資料</p>
                             
                             {error && (
-                                <div className="bg-rose-50 text-rose-600 text-xs p-3 rounded-xl mb-6 flex items-start gap-2 text-left">
+                                <div className="bg-rose-50 text-rose-600 text-xs p-4 rounded-xl mb-6 text-left flex gap-2 border border-rose-100 leading-relaxed">
                                     <Icon name="alert-circle" size={16} className="shrink-0 mt-0.5" />
                                     <span>{error}</span>
                                 </div>
@@ -242,7 +243,7 @@
 
                             <button 
                                 onClick={handleGoogleLogin}
-                                className="w-full flex items-center justify-center gap-3 bg-white border border-slate-300 py-3 rounded-xl font-bold text-slate-700 hover:bg-slate-50 transition-all shadow-sm active:scale-95"
+                                className="w-full flex items-center justify-center gap-3 bg-white border border-slate-300 py-3 rounded-xl font-bold text-slate-700 hover:bg-slate-50 shadow-sm active:scale-95 transition-all mb-4"
                             >
                                 <svg className="w-5 h-5" viewBox="0 0 24 24">
                                     <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
@@ -252,16 +253,17 @@
                                 </svg>
                                 使用 Google 帳號登入
                             </button>
+                            <p className="text-[10px] text-slate-400">登入後資料將永久儲存於雲端</p>
                         </div>
                     </div>
                 );
             }
 
-            if (isLoading) return (
-                <div className="min-h-screen flex items-center justify-center bg-slate-50">
-                    <div className="text-center animate-pulse">
-                        <div className="flex justify-center mb-4 text-blue-600"><Icon name="loader-2" size={48} className="animate-spin" /></div>
-                        <p className="text-slate-400 font-medium">系統載入中...</p>
+            if (isLoading || isAuthenticating) return (
+                <div className="min-h-screen flex items-center justify-center bg-slate-50 font-bold text-slate-400">
+                    <div className="text-center">
+                        <div className="flex justify-center mb-4 text-blue-600 animate-spin"><Icon name="loader-2" size={48} /></div>
+                        <p>{isAuthenticating ? "正在處理 Google 認證..." : "系統載入中..."}</p>
                     </div>
                 </div>
             );
@@ -272,137 +274,118 @@
                         <div className="flex items-center gap-4">
                             {user.photoURL && <img src={user.photoURL} alt="Avatar" className="w-12 h-12 rounded-full border-2 border-white shadow-sm" />}
                             <div>
-                                <h1 className="text-3xl font-extrabold text-slate-800">工程合約記帳系統</h1>
-                                <p className="text-slate-500 text-sm">目前帳號：{user.displayName || user.email}</p>
+                                <h1 className="text-3xl font-black text-slate-800 tracking-tighter">工程記帳系統</h1>
+                                <p className="text-slate-500 text-xs font-bold">使用者：{user.displayName}</p>
                             </div>
                         </div>
                         <div className="flex gap-2">
-                            <button onClick={() => setShowModal({ type: 'contract' })} className="bg-blue-600 text-white px-5 py-2.5 rounded-xl flex items-center gap-2 shadow-lg active:scale-95 transition-all text-sm font-bold"><Icon name="plus" size={18} /> 新增合約</button>
-                            <button onClick={handleLogout} className="bg-white text-slate-500 border border-slate-200 px-5 py-2.5 rounded-xl text-sm font-bold hover:bg-slate-50 transition-all">登出</button>
+                            <button onClick={() => setShowModal({ type: 'contract' })} className="bg-blue-600 text-white px-5 py-2.5 rounded-xl flex items-center gap-2 shadow-lg active:scale-95 text-sm font-bold transition-all"><Icon name="plus" size={18} /> 新增合約</button>
+                            <button onClick={handleLogout} className="bg-white text-slate-400 border px-5 py-2.5 rounded-xl text-sm font-bold hover:bg-slate-50">登出</button>
                         </div>
                     </div>
 
-                    <div className="max-w-7xl mx-auto mb-6 flex flex-wrap gap-4">
-                        <select value={filterYear} onChange={e => setFilterYear(e.target.value)} className="p-2.5 bg-white border rounded-xl text-sm outline-none shadow-sm">
+                    <div className="max-w-7xl mx-auto mb-6 flex gap-4">
+                        <select value={filterYear} onChange={e => setFilterYear(e.target.value)} className="p-2.5 bg-white border rounded-xl text-sm outline-none shadow-sm font-bold">
                             <option value="2024">2024 年度</option>
                             <option value="2025">2025 年度</option>
                             <option value="2026">2026 年度</option>
                         </select>
-                        <select value={filterCompany} onChange={e => setFilterCompany(e.target.value)} className="p-2.5 bg-white border rounded-xl text-sm outline-none shadow-sm">
+                        <select value={filterCompany} onChange={e => setFilterCompany(e.target.value)} className="p-2.5 bg-white border rounded-xl text-sm outline-none shadow-sm font-bold">
                             <option value="All">所有業主</option>
                             {[...new Set(contracts.map(c => c.owner))].map(o => <option key={o} value={o}>{o}</option>)}
                         </select>
                     </div>
 
                     <div className="max-w-7xl mx-auto space-y-8">
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                            <div className="bg-white p-6 rounded-2xl border flex items-center gap-4 shadow-sm">
-                                <div className="p-3 bg-indigo-500 text-white rounded-xl"><Icon name="dollar-sign" size={24} /></div>
-                                <div><p className="text-xs text-gray-500 font-bold uppercase tracking-wider">合約總額</p><p className="text-2xl font-black">${filteredStats.reduce((a, b) => a + Number(b.totalAmount), 0).toLocaleString()}</p></div>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 font-black">
+                            <div className="bg-white p-6 rounded-3xl border shadow-sm flex items-center gap-4">
+                                <div className="p-3 bg-indigo-500 text-white rounded-2xl"><Icon name="dollar-sign" size={24} /></div>
+                                <div><p className="text-[10px] text-slate-400 uppercase tracking-widest">合約總額</p><p className="text-2xl tracking-tighter">${filteredStats.reduce((a, b) => a + Number(b.totalAmount), 0).toLocaleString()}</p></div>
                             </div>
-                            <div className="bg-white p-6 rounded-2xl border flex items-center gap-4 shadow-sm">
-                                <div className="p-3 bg-emerald-500 text-white rounded-xl"><Icon name="check-circle" size={24} /></div>
-                                <div><p className="text-xs text-gray-500 font-bold uppercase tracking-wider">業主已付</p><p className="text-2xl font-black text-emerald-600">${filteredStats.reduce((a, b) => a + b.ownerPaid, 0).toLocaleString()}</p></div>
+                            <div className="bg-white p-6 rounded-3xl border shadow-sm flex items-center gap-4">
+                                <div className="p-3 bg-emerald-500 text-white rounded-2xl"><Icon name="check-circle" size={24} /></div>
+                                <div><p className="text-[10px] text-slate-400 uppercase tracking-widest">業主已付</p><p className="text-2xl tracking-tighter text-emerald-600">${filteredStats.reduce((a, b) => a + b.ownerPaid, 0).toLocaleString()}</p></div>
                             </div>
-                            <div className="bg-white p-6 rounded-2xl border flex items-center gap-4 shadow-sm">
-                                <div className="p-3 bg-amber-500 text-white rounded-xl"><Icon name="clock" size={24} /></div>
-                                <div><p className="text-xs text-gray-500 font-bold uppercase tracking-wider">待結保留款</p><p className="text-2xl font-black text-amber-600">${filteredStats.reduce((a, b) => a + b.retentionAmount, 0).toLocaleString()}</p></div>
+                            <div className="bg-white p-6 rounded-3xl border shadow-sm flex items-center gap-4">
+                                <div className="p-3 bg-amber-500 text-white rounded-2xl"><Icon name="clock" size={24} /></div>
+                                <div><p className="text-[10px] text-slate-400 uppercase tracking-widest">待結保留款</p><p className="text-2xl tracking-tighter text-amber-500">${filteredStats.reduce((a, b) => a + b.retentionAmount, 0).toLocaleString()}</p></div>
                             </div>
                         </div>
 
                         <div className="bg-white rounded-3xl border shadow-sm overflow-hidden">
-                            <div className="overflow-x-auto">
-                                <table className="w-full text-left">
-                                    <thead className="bg-slate-50 text-xs font-bold uppercase text-slate-400 border-b">
-                                        <tr>
-                                            <th className="px-6 py-4">合約 / 業主</th>
-                                            <th className="px-6 py-4">總額</th>
-                                            <th className="px-6 py-4 text-emerald-600">業主已付</th>
-                                            <th className="px-6 py-4">保留款</th>
-                                            <th className="px-6 py-4 text-right">操作</th>
+                            <table className="w-full text-left">
+                                <thead className="bg-slate-50 text-[10px] font-black uppercase text-slate-400 border-b tracking-widest">
+                                    <tr>
+                                        <th className="px-6 py-4">合約 / 業主</th>
+                                        <th className="px-6 py-4">總額</th>
+                                        <th className="px-6 py-4 text-emerald-600">已收</th>
+                                        <th className="px-6 py-4">保留款</th>
+                                        <th className="px-6 py-4 text-right">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100">
+                                    {filteredStats.map(item => (
+                                        <tr key={item.id} className="hover:bg-slate-50/50 transition-colors">
+                                            <td className="px-6 py-5 font-bold text-slate-700">{item.name}<div className="text-[10px] text-slate-300 font-normal mt-0.5">{item.owner}</div></td>
+                                            <td className="px-6 py-5 text-sm font-medium text-slate-500">${Number(item.totalAmount).toLocaleString()}</td>
+                                            <td className="px-6 py-5 font-black text-emerald-600">${item.ownerPaid.toLocaleString()}</td>
+                                            <td className="px-6 py-5 font-bold text-amber-500">${item.retentionAmount.toLocaleString()}<div className="text-[9px] text-slate-300">{item.retentionExpiry || '--'}</div></td>
+                                            <td className="px-6 py-5 text-right flex justify-end gap-1">
+                                                <button onClick={() => setShowModal({type: 'payment', contractId: item.id})} className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg"><Icon name="plus" size={18} /></button>
+                                                <button onClick={() => handleDeleteContract(item.id)} className="p-2 text-rose-400 hover:bg-rose-50 rounded-lg"><Icon name="trash-2" size={18} /></button>
+                                            </td>
                                         </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-slate-100">
-                                        {filteredStats.map(item => (
-                                            <tr key={item.id} className="hover:bg-slate-50/50 transition-colors">
-                                                <td className="px-6 py-5 font-bold text-slate-700">
-                                                    {item.name}
-                                                    <div className="text-[10px] font-normal text-slate-400 mt-1 uppercase flex items-center gap-1">
-                                                        <Icon name="building" size={10} /> {item.owner}
-                                                    </div>
-                                                </td>
-                                                <td className="px-6 py-5 font-medium text-slate-600">${Number(item.totalAmount).toLocaleString()}</td>
-                                                <td className="px-6 py-5 font-black text-emerald-600">${item.ownerPaid.toLocaleString()}</td>
-                                                <td className="px-6 py-5">
-                                                    <div className={`font-bold ${item.alerts.retentionExpiring ? "text-rose-500" : "text-amber-600"}`}>${item.retentionAmount.toLocaleString()}</div>
-                                                    <div className="text-[10px] text-gray-400">{item.retentionExpiry || '未設定'}</div>
-                                                </td>
-                                                <td className="px-6 py-5 text-right flex justify-end gap-2">
-                                                    <button onClick={() => { setFormData({...formData, type: 'owner'}); setShowModal({type: 'payment', contractId: item.id}); }} className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"><Icon name="plus" size={18} /></button>
-                                                    <button onClick={() => handleDeleteContract(item.id)} className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg transition-colors"><Icon name="trash-2" size={18} /></button>
-                                                </td>
-                                            </tr>
-                                        ))}
-                                        {filteredStats.length === 0 && (
-                                            <tr><td colSpan="5" className="px-6 py-20 text-center text-slate-400 italic">目前尚無此年度的合約紀錄。</td></tr>
-                                        )}
-                                    </tbody>
-                                </table>
-                            </div>
+                                    ))}
+                                    {filteredStats.length === 0 && (
+                                        <tr><td colSpan="5" className="px-6 py-20 text-center text-slate-300 italic text-sm font-medium">尚無合約紀錄</td></tr>
+                                    )}
+                                </tbody>
+                            </table>
                         </div>
                     </div>
 
                     {showModal && (
-                        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
                             <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md animate-in">
                                 <div className="p-6 border-b flex justify-between items-center">
-                                    <h3 className="font-extrabold text-lg text-slate-800">{showModal.type === 'contract' ? '新增工程合約' : '款項紀錄'}</h3>
-                                    <button onClick={() => setShowModal(null)} className="text-gray-400 hover:text-slate-600">✕</button>
+                                    <h3 className="font-black text-slate-800">{showModal.type === 'contract' ? '新增工程合約' : '記錄已收款項'}</h3>
+                                    <button onClick={() => setShowModal(null)} className="text-slate-300 hover:text-slate-500">✕</button>
                                 </div>
-                                <div className="p-6 space-y-5">
+                                <div className="p-6 space-y-4">
                                     {showModal.type === 'contract' ? (
                                         <>
-                                            <div className="space-y-1">
-                                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">合約名稱</label>
-                                                <input type="text" placeholder="例如：新建工程 A 棟" className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" onChange={e => setFormData({...formData, name: e.target.value})} />
-                                            </div>
-                                            <div className="space-y-1">
-                                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">業主名稱</label>
-                                                <input type="text" placeholder="公司名稱" className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" onChange={e => setFormData({...formData, owner: e.target.value})} />
-                                            </div>
-                                            <div className="space-y-1">
-                                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">合約金額 (NT$)</label>
-                                                <input type="number" placeholder="輸入總額" className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" onChange={e => setFormData({...formData, totalAmount: e.target.value})} />
-                                            </div>
+                                            <input type="text" placeholder="合約名稱" className="w-full p-3 bg-slate-50 border rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500" onChange={e => setFormData({...formData, name: e.target.value})} />
+                                            <input type="text" placeholder="業主公司" className="w-full p-3 bg-slate-50 border rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500" onChange={e => setFormData({...formData, owner: e.target.value})} />
+                                            <input type="number" placeholder="合約總額 (NT$)" className="w-full p-3 bg-slate-50 border rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500" onChange={e => setFormData({...formData, totalAmount: e.target.value})} />
                                             <div className="grid grid-cols-2 gap-4">
                                                 <div className="space-y-1">
-                                                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">保留款 %</label>
-                                                    <input type="number" defaultValue="10" className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" onChange={e => setFormData({...formData, retentionRate: e.target.value})} />
+                                                    <label className="text-[10px] font-bold text-slate-400 ml-1">保留款 %</label>
+                                                    <input type="number" defaultValue="10" className="w-full p-3 bg-slate-50 border rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500" onChange={e => setFormData({...formData, retentionRate: e.target.value})} />
                                                 </div>
                                                 <div className="space-y-1">
-                                                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">到期日期</label>
-                                                    <input type="date" className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" onChange={e => setFormData({...formData, retentionExpiry: e.target.value})} />
+                                                    <label className="text-[10px] font-bold text-slate-400 ml-1">保留款到期日</label>
+                                                    <input type="date" className="w-full p-3 bg-slate-50 border rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500" onChange={e => setFormData({...formData, retentionExpiry: e.target.value})} />
                                                 </div>
                                             </div>
-                                            <button onClick={handleSaveContract} className="w-full py-4 bg-blue-600 text-white font-black rounded-2xl shadow-lg hover:bg-blue-700 transition-all">建立合約</button>
+                                            <button onClick={handleSaveContract} className="w-full py-4 bg-blue-600 text-white font-black rounded-2xl shadow-lg hover:bg-blue-700 transition-all active:scale-95">建立合約</button>
                                         </>
                                     ) : (
                                         <>
                                             <div className="space-y-1">
-                                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">金額</label>
-                                                <input type="number" placeholder="輸入款項金額" className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500" onChange={e => setFormData({...formData, amount: e.target.value})} />
+                                                <label className="text-[10px] font-bold text-slate-400 ml-1">收款金額</label>
+                                                <input type="number" placeholder="NT$" className="w-full p-3 bg-slate-50 border rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-emerald-500" onChange={e => setFormData({...formData, amount: e.target.value})} />
                                             </div>
                                             <div className="grid grid-cols-2 gap-4">
                                                 <div className="space-y-1">
-                                                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">發票號碼</label>
-                                                    <input type="text" placeholder="AB-..." className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 uppercase" onChange={e => setFormData({...formData, invoiceNo: e.target.value})} />
+                                                    <label className="text-[10px] font-bold text-slate-400 ml-1">發票號碼</label>
+                                                    <input type="text" placeholder="AB-..." className="w-full p-3 bg-slate-50 border rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-emerald-500 uppercase" onChange={e => setFormData({...formData, invoiceNo: e.target.value})} />
                                                 </div>
                                                 <div className="space-y-1">
-                                                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">發票日期</label>
-                                                    <input type="date" className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500" onChange={e => setFormData({...formData, invoiceDate: e.target.value})} />
+                                                    <label className="text-[10px] font-bold text-slate-400 ml-1">發票日期</label>
+                                                    <input type="date" className="w-full p-3 bg-slate-50 border rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-emerald-500" onChange={e => setFormData({...formData, invoiceDate: e.target.value})} />
                                                 </div>
                                             </div>
-                                            <button onClick={handleSavePayment} className="w-full py-4 bg-emerald-600 text-white font-black rounded-2xl shadow-lg hover:bg-emerald-700 transition-all">儲存紀錄</button>
+                                            <button onClick={handleSavePayment} className="w-full py-4 bg-emerald-600 text-white font-black rounded-2xl shadow-lg hover:bg-emerald-700 transition-all active:scale-95">儲存收款紀錄</button>
                                         </>
                                     )}
                                 </div>
