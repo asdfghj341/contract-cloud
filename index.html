@@ -55,7 +55,18 @@ const App = () => {
   const [showModal, setShowModal] = useState(null);
 
   // 表單暫存狀態
-  const [formData, setFormData] = useState({});
+  const [formData, setFormData] = useState({
+    name: '',
+    owner: '',
+    totalAmount: '',
+    retentionRate: 10,
+    retentionExpiry: '',
+    type: 'owner',
+    amount: '',
+    invoiceNo: '',
+    invoiceDate: '',
+    vendor: ''
+  });
 
   // --- 計算邏輯 ---
   const stats = useMemo(() => {
@@ -116,7 +127,7 @@ const App = () => {
     };
     setContracts([...contracts, newContract]);
     setShowModal(null);
-    setFormData({});
+    setFormData({ retentionRate: 10 });
   };
 
   const handleSavePayment = () => {
@@ -138,7 +149,7 @@ const App = () => {
       setVendorPayments([...vendorPayments, newPayment]);
     }
     setShowModal(null);
-    setFormData({});
+    setFormData({ retentionRate: 10 });
   };
 
   const SummaryCard = ({ title, value, icon: Icon, color }) => (
@@ -163,7 +174,7 @@ const App = () => {
         </div>
         <button 
           onClick={() => {
-            setFormData({ retentionRate: 10 });
+            setFormData({ ...formData, retentionRate: 10 });
             setShowModal({ type: 'contract' });
           }}
           className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl flex items-center gap-2 transition-all shadow-lg shadow-blue-200"
@@ -172,134 +183,242 @@ const App = () => {
         </button>
       </div>
 
-      {/* Filters */}
+      {/* Tabs & Filters */}
       <div className="max-w-7xl mx-auto mb-6">
         <div className="flex flex-wrap items-center justify-between gap-4 bg-white p-3 rounded-2xl shadow-sm border border-gray-100">
           <div className="flex p-1 bg-gray-50 rounded-xl">
-            <button onClick={() => setActiveTab('dashboard')} className={`px-4 py-2 rounded-lg text-sm font-medium ${activeTab === 'dashboard' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}>儀表板</button>
-            <button onClick={() => setActiveTab('contracts')} className={`px-4 py-2 rounded-lg text-sm font-medium ${activeTab === 'contracts' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}>合約清單</button>
+            <button 
+              onClick={() => setActiveTab('dashboard')} 
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'dashboard' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}
+            >
+              儀表板
+            </button>
+            <button 
+              onClick={() => setActiveTab('contracts')} 
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'contracts' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}
+            >
+              合約清單
+            </button>
           </div>
-          <div className="flex gap-4">
-            <select value={filterYear} onChange={(e) => setFilterYear(e.target.value)} className="bg-gray-50 border-none text-sm rounded-lg focus:ring-0">
-              <option value="2024">2024 年度</option>
-              <option value="2025">2025 年度</option>
-            </select>
-            <select value={filterCompany} onChange={(e) => setFilterCompany(e.target.value)} className="bg-gray-50 border-none text-sm rounded-lg focus:ring-0">
-              {companies.map(c => <option key={c} value={c}>{c === 'All' ? '所有公司' : c}</option>)}
-            </select>
+          <div className="flex gap-4 items-center">
+            <div className="flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded-lg border border-gray-100">
+              <Calendar size={16} className="text-gray-400" />
+              <select value={filterYear} onChange={(e) => setFilterYear(e.target.value)} className="bg-transparent border-none text-sm focus:ring-0 cursor-pointer">
+                <option value="2024">2024 年度</option>
+                <option value="2025">2025 年度</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded-lg border border-gray-100">
+              <Building2 size={16} className="text-gray-400" />
+              <select value={filterCompany} onChange={(e) => setFilterCompany(e.target.value)} className="bg-transparent border-none text-sm focus:ring-0 cursor-pointer">
+                {companies.map(c => <option key={c} value={c}>{c === 'All' ? '所有公司' : c}</option>)}
+              </select>
+            </div>
           </div>
         </div>
       </div>
 
       <div className="max-w-7xl mx-auto space-y-8">
         {activeTab === 'dashboard' && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <SummaryCard title="年度合約總額" value={filteredStats.reduce((sum, s) => sum + s.totalAmount, 0)} icon={DollarSign} color="bg-indigo-500" />
-            <SummaryCard title="已收業主款項" value={filteredStats.reduce((sum, s) => sum + s.ownerPaid, 0)} icon={CheckCircle} color="bg-emerald-500" />
-            <SummaryCard title="待結保留款" value={filteredStats.reduce((sum, s) => sum + s.retentionAmount, 0)} icon={Clock} color="bg-amber-500" />
-          </div>
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
+              <SummaryCard title="年度合約總額" value={filteredStats.reduce((sum, s) => sum + s.totalAmount, 0)} icon={DollarSign} color="bg-indigo-500" />
+              <SummaryCard title="已收業主款項" value={filteredStats.reduce((sum, s) => sum + s.ownerPaid, 0)} icon={CheckCircle} color="bg-emerald-500" />
+              <SummaryCard title="待結保留款" value={filteredStats.reduce((sum, s) => sum + s.retentionAmount, 0)} icon={Clock} color="bg-amber-500" />
+            </div>
+
+            {/* Alerts Section */}
+            <div className="space-y-4">
+              <h3 className="text-lg font-bold flex items-center gap-2 text-slate-700">
+                <AlertTriangle size={20} className="text-amber-500" /> 系統提醒事項
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {filteredStats.some(s => s.alerts.vendorLagging || s.alerts.retentionExpiring) ? (
+                  filteredStats.map(s => (
+                    <React.Fragment key={s.id}>
+                      {s.alerts.vendorLagging && (
+                        <div className="bg-amber-50 border-l-4 border-amber-400 p-4 rounded-r-xl flex items-start gap-3">
+                          <ArrowRightLeft className="text-amber-600 mt-1 shrink-0" size={18} />
+                          <div>
+                            <p className="font-bold text-amber-900">{s.name}</p>
+                            <p className="text-sm text-amber-700">業主已付 ${s.ownerPaid.toLocaleString()}，廠商僅支出 ${s.vendorPaid.toLocaleString()}，請確認廠商進度。</p>
+                          </div>
+                        </div>
+                      )}
+                      {s.alerts.retentionExpiring && (
+                        <div className="bg-blue-50 border-l-4 border-blue-400 p-4 rounded-r-xl flex items-start gap-3">
+                          <Clock className="text-blue-600 mt-1 shrink-0" size={18} />
+                          <div>
+                            <p className="font-bold text-blue-900">{s.name}</p>
+                            <p className="text-sm text-blue-700">保留款即將到期：{s.retentionExpiry}。預計金額：${s.retentionAmount.toLocaleString()}</p>
+                          </div>
+                        </div>
+                      )}
+                    </React.Fragment>
+                  ))
+                ) : (
+                  <div className="col-span-2 py-8 bg-white border border-dashed border-gray-200 rounded-2xl flex flex-col items-center justify-center text-gray-400">
+                    <CheckCircle size={32} className="mb-2 opacity-20" />
+                    <p>目前沒有任何異常提醒</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
         )}
 
-        {/* Alerts */}
-        <div className="space-y-4">
-          <h3 className="text-lg font-bold flex items-center gap-2 text-slate-700"><AlertTriangle size={20} className="text-amber-500" /> 系統提醒</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {filteredStats.map(s => (
-              <React.Fragment key={s.id}>
-                {s.alerts.vendorLagging && (
-                  <div className="bg-amber-50 border-l-4 border-amber-400 p-4 rounded-r-xl">
-                    <p className="font-bold text-amber-900">{s.name}</p>
-                    <p className="text-sm text-amber-700">業主已付 ${s.ownerPaid.toLocaleString()}，廠商僅支 ${s.vendorPaid.toLocaleString()}，請確認工程進度。</p>
-                  </div>
-                )}
-                {s.alerts.retentionExpiring && (
-                  <div className="bg-blue-50 border-l-4 border-blue-400 p-4 rounded-r-xl">
-                    <p className="font-bold text-blue-900">{s.name}</p>
-                    <p className="text-sm text-blue-700">保留款即將到期：{s.retentionExpiry}。預計金額：${s.retentionAmount.toLocaleString()}</p>
-                  </div>
-                )}
-              </React.Fragment>
-            ))}
-          </div>
-        </div>
-
-        {/* Table */}
+        {/* Table View */}
         <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
-          <table className="w-full text-left">
-            <thead className="bg-gray-50 text-gray-500 text-xs font-bold uppercase tracking-wider">
-              <tr>
-                <th className="px-6 py-4">合約名稱</th>
-                <th className="px-6 py-4">總額</th>
-                <th className="px-6 py-4">業主已付</th>
-                <th className="px-6 py-4">廠商已付</th>
-                <th className="px-6 py-4">保留款</th>
-                <th className="px-6 py-4 text-right">操作</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {filteredStats.map(item => (
-                <tr key={item.id} className="hover:bg-slate-50 transition-colors group">
-                  <td className="px-6 py-5 font-bold text-slate-800">{item.name}<div className="text-xs text-slate-400 font-normal">{item.owner}</div></td>
-                  <td className="px-6 py-5 text-sm">${item.totalAmount.toLocaleString()}</td>
-                  <td className="px-6 py-5 text-sm text-emerald-600 font-bold">${item.ownerPaid.toLocaleString()}</td>
-                  <td className="px-6 py-5 text-sm text-blue-600 font-bold">${item.vendorPaid.toLocaleString()}</td>
-                  <td className="px-6 py-5 text-sm">
-                    <div className={item.alerts.retentionExpiring ? "text-rose-500 font-bold" : "text-amber-600"}>
-                      ${item.retentionAmount.toLocaleString()}
-                    </div>
-                    <div className="text-[10px] text-gray-400">{item.retentionExpiry} 到期</div>
-                  </td>
-                  <td className="px-6 py-5 text-right">
-                    <button 
-                      onClick={() => {
-                        setFormData({ type: 'owner' });
-                        setShowModal({ type: 'payment', contractId: item.id });
-                      }}
-                      className="text-blue-600 hover:bg-blue-50 p-2 rounded-lg transition-colors"
-                    >
-                      <Plus size={18} />
-                    </button>
-                    <button onClick={() => setContracts(contracts.filter(c => c.id !== item.id))} className="text-rose-600 hover:bg-rose-50 p-2 rounded-lg ml-2 transition-colors">
-                      <Trash2 size={18} />
-                    </button>
-                  </td>
+          <div className="p-6 border-b border-gray-50 flex justify-between items-center">
+            <h2 className="text-xl font-bold flex items-center gap-2">
+              <FileText size={20} className="text-blue-600" />
+              {activeTab === 'dashboard' ? '近期合約狀況' : '合約詳細清單'}
+            </h2>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead className="bg-gray-50/50 text-gray-500 text-xs font-bold uppercase tracking-wider">
+                <tr>
+                  <th className="px-6 py-4">合約名稱 / 業主</th>
+                  <th className="px-6 py-4">總額</th>
+                  <th className="px-6 py-4">業主款項 (已收)</th>
+                  <th className="px-6 py-4">廠商款項 (已付)</th>
+                  <th className="px-6 py-4">保留款 (% / 到期)</th>
+                  <th className="px-6 py-4 text-right">操作</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {filteredStats.map(item => (
+                  <tr key={item.id} className="hover:bg-slate-50 transition-colors group">
+                    <td className="px-6 py-5">
+                      <div className="font-bold text-slate-800 leading-tight">{item.name}</div>
+                      <div className="text-xs text-slate-400 mt-1 flex items-center gap-1">
+                        <Building2 size={12} /> {item.owner}
+                      </div>
+                    </td>
+                    <td className="px-6 py-5 text-sm font-medium text-slate-600">${item.totalAmount.toLocaleString()}</td>
+                    <td className="px-6 py-5">
+                      <div className="text-sm font-bold text-emerald-600">${item.ownerPaid.toLocaleString()}</div>
+                      <div className="w-24 bg-gray-100 h-1 rounded-full mt-2 overflow-hidden">
+                        <div className="bg-emerald-500 h-full" style={{ width: `${Math.min((item.ownerPaid/item.totalAmount)*100, 100)}%` }} />
+                      </div>
+                    </td>
+                    <td className="px-6 py-5">
+                      <div className="text-sm font-bold text-blue-600">${item.vendorPaid.toLocaleString()}</div>
+                      <div className="w-24 bg-gray-100 h-1 rounded-full mt-2 overflow-hidden">
+                        <div className="bg-blue-500 h-full" style={{ width: `${Math.min((item.vendorPaid/item.totalAmount)*100, 100)}%` }} />
+                      </div>
+                    </td>
+                    <td className="px-6 py-5 text-sm">
+                      <div className={`font-bold ${item.alerts.retentionExpiring ? "text-rose-500 animate-pulse" : "text-amber-600"}`}>
+                        ${item.retentionAmount.toLocaleString()} ({item.retentionRate}%)
+                      </div>
+                      <div className="text-[10px] text-gray-400 mt-0.5">{item.retentionExpiry} 到期</div>
+                    </td>
+                    <td className="px-6 py-5 text-right">
+                      <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button 
+                          onClick={() => {
+                            setFormData({ ...formData, type: 'owner' });
+                            setShowModal({ type: 'payment', contractId: item.id });
+                          }}
+                          className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg"
+                          title="新增發票紀錄"
+                        >
+                          <Plus size={18} />
+                        </button>
+                        <button 
+                          onClick={() => setContracts(contracts.filter(c => c.id !== item.id))}
+                          className="p-2 text-rose-600 hover:bg-rose-50 rounded-lg"
+                        >
+                          <Trash2 size={18} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
-      {/* Modal */}
+      {/* Modal - 新增視窗 */}
       {showModal && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden">
-            <div className="p-6 border-b flex justify-between items-center bg-slate-50">
-              <h3 className="font-bold text-lg">{showModal.type === 'contract' ? '新增工程合約' : '新增款項紀錄'}</h3>
-              <button onClick={() => setShowModal(null)} className="text-gray-400 hover:text-black">✕</button>
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in duration-200">
+            <div className="p-6 border-b flex justify-between items-center bg-slate-50/50">
+              <h3 className="font-bold text-lg text-slate-800">
+                {showModal.type === 'contract' ? '新建工程合約' : '發票與款項記帳'}
+              </h3>
+              <button onClick={() => setShowModal(null)} className="p-2 hover:bg-gray-200 rounded-full transition-colors">✕</button>
             </div>
+            
             <div className="p-6 space-y-4">
               {showModal.type === 'contract' ? (
                 <>
-                  <input type="text" placeholder="合約名稱" className="w-full p-3 bg-gray-50 border border-gray-100 rounded-xl" onChange={e => setFormData({...formData, name: e.target.value})} />
-                  <input type="text" placeholder="業主名稱" className="w-full p-3 bg-gray-50 border border-gray-100 rounded-xl" onChange={e => setFormData({...formData, owner: e.target.value})} />
-                  <input type="number" placeholder="合約總額" className="w-full p-3 bg-gray-50 border border-gray-100 rounded-xl" onChange={e => setFormData({...formData, totalAmount: e.target.value})} />
-                  <div className="grid grid-cols-2 gap-4">
-                    <input type="number" placeholder="保留款 %" className="p-3 bg-gray-50 border border-gray-100 rounded-xl" onChange={e => setFormData({...formData, retentionRate: e.target.value})} />
-                    <input type="date" className="p-3 bg-gray-50 border border-gray-100 rounded-xl" onChange={e => setFormData({...formData, retentionExpiry: e.target.value})} />
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-gray-400 ml-1">合約名稱</label>
+                    <input type="text" placeholder="例如：A區新建工程" className="w-full p-3 bg-gray-50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" onChange={e => setFormData({...formData, name: e.target.value})} />
                   </div>
-                  <button onClick={handleSaveContract} className="w-full py-4 bg-blue-600 text-white font-bold rounded-xl shadow-lg shadow-blue-200">儲存合約</button>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-gray-400 ml-1">業主公司</label>
+                    <input type="text" placeholder="業主名稱" className="w-full p-3 bg-gray-50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" onChange={e => setFormData({...formData, owner: e.target.value})} />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-gray-400 ml-1">合約總金額</label>
+                    <input type="number" placeholder="金額" className="w-full p-3 bg-gray-50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" onChange={e => setFormData({...formData, totalAmount: e.target.value})} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-gray-400 ml-1">保留款 %</label>
+                      <input type="number" value={formData.retentionRate} className="w-full p-3 bg-gray-50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" onChange={e => setFormData({...formData, retentionRate: e.target.value})} />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-gray-400 ml-1">保留款到期日</label>
+                      <input type="date" className="w-full p-3 bg-gray-50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" onChange={e => setFormData({...formData, retentionExpiry: e.target.value})} />
+                    </div>
+                  </div>
+                  <button onClick={handleSaveContract} className="w-full py-4 bg-blue-600 text-white font-bold rounded-2xl shadow-lg shadow-blue-100 hover:bg-blue-700 transition-colors mt-2">
+                    建立合約
+                  </button>
                 </>
               ) : (
                 <>
-                  <select className="w-full p-3 bg-gray-50 border border-gray-100 rounded-xl" onChange={e => setFormData({...formData, type: e.target.value === '業主付款' ? 'owner' : 'vendor'})}>
-                    <option value="業主付款">業主付款 (收入)</option>
-                    <option value="廠商付款">廠商付款 (支出)</option>
-                  </select>
-                  <input type="number" placeholder="金額" className="w-full p-3 bg-gray-50 border border-gray-100 rounded-xl" onChange={e => setFormData({...formData, amount: e.target.value})} />
-                  <input type="text" placeholder="發票號碼" className="w-full p-3 bg-gray-50 border border-gray-100 rounded-xl" onChange={e => setFormData({...formData, invoiceNo: e.target.value})} />
-                  <input type="date" className="w-full p-3 bg-gray-50 border border-gray-100 rounded-xl" onChange={e => setFormData({...formData, invoiceDate: e.target.value})} />
-                  <button onClick={handleSavePayment} className="w-full py-4 bg-emerald-600 text-white font-bold rounded-xl shadow-lg shadow-emerald-200">儲存紀錄</button>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-gray-400 ml-1">帳目類型</label>
+                    <div className="flex gap-2 p-1 bg-gray-100 rounded-xl">
+                      <button 
+                        onClick={() => setFormData({...formData, type: 'owner'})}
+                        className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all ${formData.type === 'owner' ? 'bg-white shadow-sm text-emerald-600' : 'text-gray-400'}`}
+                      >
+                        業主付款 (收)
+                      </button>
+                      <button 
+                        onClick={() => setFormData({...formData, type: 'vendor'})}
+                        className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all ${formData.type === 'vendor' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-400'}`}
+                      >
+                        廠商付款 (支)
+                      </button>
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-gray-400 ml-1">金額</label>
+                    <input type="number" placeholder="輸入金額" className="w-full p-3 bg-gray-50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" onChange={e => setFormData({...formData, amount: e.target.value})} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-gray-400 ml-1">發票號碼</label>
+                      <input type="text" placeholder="AB123..." className="w-full p-3 bg-gray-50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" onChange={e => setFormData({...formData, invoiceNo: e.target.value})} />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-gray-400 ml-1">發票日期</label>
+                      <input type="date" className="w-full p-3 bg-gray-50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" onChange={e => setFormData({...formData, invoiceDate: e.target.value})} />
+                    </div>
+                  </div>
+                  <button onClick={handleSavePayment} className="w-full py-4 bg-emerald-600 text-white font-bold rounded-2xl shadow-lg shadow-emerald-100 hover:bg-emerald-700 transition-colors mt-2">
+                    儲存紀錄
+                  </button>
                 </>
               )}
             </div>
