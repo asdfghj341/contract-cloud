@@ -16,10 +16,10 @@
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, onAuthStateChanged, signInWithRedirect, getRedirectResult, GoogleAuthProvider, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, onAuthStateChanged, signInWithRedirect, getRedirectResult, GoogleAuthProvider, signOut, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        window.Firebase = { initializeApp, getAuth, onAuthStateChanged, signInWithRedirect, getRedirectResult, GoogleAuthProvider, signOut, getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query };
+        window.Firebase = { initializeApp, getAuth, onAuthStateChanged, signInWithRedirect, getRedirectResult, GoogleAuthProvider, signOut, setPersistence, browserLocalPersistence, getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query };
     </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap');
@@ -35,7 +35,7 @@
 
     <script type="text/babel">
         const { useState, useMemo, useEffect, useRef } = React;
-        const { initializeApp, getAuth, onAuthStateChanged, signInWithRedirect, getRedirectResult, GoogleAuthProvider, signOut, getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query } = window.Firebase || {};
+        const { initializeApp, getAuth, onAuthStateChanged, signInWithRedirect, getRedirectResult, GoogleAuthProvider, signOut, setPersistence, browserLocalPersistence, getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query } = window.Firebase || {};
 
         // --- Firebase 設定 ---
         const firebaseConfig = {
@@ -79,7 +79,7 @@
             const [ownerPayments, setOwnerPayments] = useState([]);
             const [vendorPayments, setVendorPayments] = useState([]);
             const [isLoading, setIsLoading] = useState(true);
-            const [isAuthenticating, setIsAuthenticating] = useState(true);
+            const [isAuthenticating, setIsAuthenticating] = useState(false);
             const [error, setError] = useState(null);
             const [copySuccess, setCopySuccess] = useState(false);
 
@@ -93,31 +93,43 @@
                 type: 'owner', amount: '', invoiceNo: '', invoiceDate: '', vendor: ''
             });
 
+            // 1. 初始化身分驗證與重新定向處理
             useEffect(() => {
                 if (!auth) return;
 
-                getRedirectResult(auth)
-                    .then(() => {
-                        setIsAuthenticating(false);
-                    })
-                    .catch((err) => {
-                        console.error("Redirect Error:", err);
+                const initAuthSession = async () => {
+                    try {
+                        // 強制設定本地持久化，防止手機瀏覽器重新整理後掉登入
+                        await setPersistence(auth, browserLocalPersistence);
+                        
+                        // 檢查是否有重定向回來的結果
+                        const result = await getRedirectResult(auth);
+                        if (result?.user) {
+                            console.log("登入成功來自 Redirect:", result.user.displayName);
+                        }
+                    } catch (err) {
+                        console.error("Auth Init Error:", err);
                         if (err.code === 'auth/unauthorized-domain') {
-                            setError(`網域未授權：請將「${window.location.hostname}」加入 Firebase Console 的授權名單。`);
+                            setError(`網域未授權：請將「${window.location.hostname}」加入 Firebase Console 授權清單。`);
                         } else {
                             setError(`認證失敗: ${err.message}`);
                         }
-                        setIsAuthenticating(false);
-                    });
+                    } finally {
+                        setIsLoading(false);
+                    }
+                };
+
+                initAuthSession();
 
                 const unsubscribe = onAuthStateChanged(auth, (u) => {
                     setUser(u);
                     if (u) setError(null);
-                    setIsLoading(false);
                 });
+                
                 return () => unsubscribe();
             }, []);
 
+            // 2. 監聽 Firestore 資料
             useEffect(() => {
                 if (!user || !db) return;
 
@@ -128,8 +140,8 @@
                 const unsubContracts = onSnapshot(query(contractsCol), (snapshot) => {
                     setContracts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
                 }, (err) => {
-                    console.error("讀取數據失敗:", err);
-                    setError(`資料庫讀取失敗: ${err.message}`);
+                    console.error("Firestore Error:", err);
+                    setError(`資料讀取失敗: ${err.message}`);
                 });
 
                 const unsubOwnerPay = onSnapshot(query(ownerPaymentsCol), (snapshot) => {
@@ -151,16 +163,20 @@
                 try {
                     setError(null);
                     setIsAuthenticating(true);
+                    // LINE/手機 App 內必須使用 Redirect 方式
                     await signInWithRedirect(auth, googleProvider);
                 } catch (err) {
-                    console.error("登入請求失敗:", err);
-                    setError(`登入請求失敗: ${err.message}`);
+                    console.error("Login Error:", err);
+                    setError(`登入失敗: ${err.message}`);
                     setIsAuthenticating(false);
                 }
             };
 
             const handleLogout = async () => {
-                try { await signOut(auth); } catch (err) { console.error(err); }
+                try { 
+                    await signOut(auth); 
+                    setUser(null);
+                } catch (err) { console.error(err); }
             };
 
             const handleCopyUrl = () => {
@@ -235,37 +251,48 @@
                 await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'contracts', id));
             };
 
-            // 登入介面
-            if (!user && !isLoading && !isAuthenticating) {
+            // --- UI 渲染 ---
+
+            // 1. 如果正在檢查認證或重新定向中
+            if (isLoading || isAuthenticating) return (
+                <div className="min-h-screen flex items-center justify-center bg-slate-50 font-bold text-slate-400">
+                    <div className="text-center animate-in">
+                        <div className="flex justify-center mb-4 text-blue-600 animate-spin"><Icon name="loader-2" size={48} /></div>
+                        <p className="tracking-widest">正在連線 Google 認證系統...</p>
+                    </div>
+                </div>
+            );
+
+            // 2. 如果未登入
+            if (!user) {
                 const isMessenger = /Line|FBAN|FBAV|Instagram/i.test(navigator.userAgent);
 
                 return (
                     <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6 animate-in">
-                        <div className="bg-white p-8 md:p-10 rounded-3xl shadow-2xl max-w-sm w-full text-center border border-slate-200">
+                        <div className="bg-white p-8 md:p-10 rounded-[2.5rem] shadow-2xl max-w-sm w-full text-center border border-slate-200">
                             <div className="flex justify-center mb-6 text-blue-600"><Icon name="building-2" size={64} /></div>
                             <h1 className="text-2xl font-black text-slate-800 mb-2">工程合約記帳系統</h1>
-                            <p className="text-slate-500 mb-8 font-medium">請登入以同步雲端資料</p>
+                            <p className="text-slate-500 mb-8 font-medium italic">安全、雲端、即時</p>
                             
                             {isMessenger && (
-                                <div className="bg-blue-50 text-blue-600 text-[11px] p-4 rounded-xl mb-6 text-left border border-blue-100 leading-relaxed">
-                                    <div className="flex gap-2 mb-1 font-bold">
-                                        <Icon name="info" size={14} className="shrink-0" />
-                                        <span>偵測到您正在使用 LINE/FB 瀏覽器</span>
+                                <div className="bg-amber-50 text-amber-700 text-[11px] p-4 rounded-2xl mb-6 text-left border border-amber-100 leading-relaxed font-bold">
+                                    <div className="flex gap-2 mb-1">
+                                        <Icon name="alert-triangle" size={14} className="shrink-0" />
+                                        <span>重要提示 (LINE/FB 使用者)</span>
                                     </div>
-                                    <p>Google 政策禁止在 App 內登入。請點擊右上角「...」並選擇「用外部瀏覽器開啟」，或點擊下方按鈕複製網址後開啟 Chrome/Safari。</p>
+                                    <p>內建瀏覽器常阻擋 Google 登入。請點擊右上角「...」選擇「用外部瀏覽器開啟」，或複製網址後開啟 Chrome/Safari。</p>
                                 </div>
                             )}
 
                             {error && (
-                                <div className="bg-rose-50 text-rose-600 text-xs p-4 rounded-xl mb-6 text-left flex gap-2 border border-rose-100 leading-relaxed font-medium">
-                                    <Icon name="alert-circle" size={16} className="shrink-0 mt-0.5" />
-                                    <span>{error}</span>
+                                <div className="bg-rose-50 text-rose-600 text-xs p-4 rounded-2xl mb-6 text-left border border-rose-100 font-bold">
+                                    <p>{error}</p>
                                 </div>
                             )}
 
                             <button 
                                 onClick={handleGoogleLogin}
-                                className="w-full flex items-center justify-center gap-3 bg-white border border-slate-300 py-3 rounded-xl font-bold text-slate-700 hover:bg-slate-50 shadow-sm active:scale-95 transition-all mb-4"
+                                className="w-full flex items-center justify-center gap-3 bg-slate-900 py-4 rounded-2xl font-black text-white hover:bg-slate-800 shadow-xl active:scale-95 transition-all mb-4"
                             >
                                 <svg className="w-5 h-5" viewBox="0 0 24 24">
                                     <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
@@ -273,177 +300,166 @@
                                     <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
                                     <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
                                 </svg>
-                                使用 Google 帳號登入
+                                點此 Google 登入
                             </button>
 
                             <button 
                                 onClick={handleCopyUrl}
-                                className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-xs transition-all ${copySuccess ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                                className={`w-full flex items-center justify-center gap-2 py-3 rounded-2xl font-bold text-xs transition-all ${copySuccess ? 'bg-emerald-500 text-white shadow-lg' : 'bg-slate-100 text-slate-500'}`}
                             >
                                 <Icon name={copySuccess ? "check" : "copy"} size={14} />
-                                {copySuccess ? "網址已複製！" : "複製網址 (手動貼至 Chrome/Safari)"}
+                                {copySuccess ? "網址已複製成功！" : "複製網址 (改用 Chrome)"}
                             </button>
-
-                            <p className="text-[10px] text-slate-400 mt-6 font-medium">您的資料將永久安全儲存於雲端</p>
                         </div>
                     </div>
                 );
             }
 
-            if (isLoading || isAuthenticating) return (
-                <div className="min-h-screen flex items-center justify-center bg-slate-50 font-bold text-slate-400">
-                    <div className="text-center animate-in">
-                        <div className="flex justify-center mb-4 text-blue-600 animate-spin"><Icon name="loader-2" size={48} /></div>
-                        <p className="tracking-widest">{isAuthenticating ? "正在連線 Google 認證..." : "雲端資料讀取中..."}</p>
-                    </div>
-                </div>
-            );
-
+            // 3. 已登入的主畫面
             return (
-                <div className="min-h-screen p-4 md:p-8 animate-in">
-                    <div className="max-w-7xl mx-auto mb-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-slate-200 pb-8">
-                        <div className="flex items-center gap-4">
-                            {user.photoURL && <img src={user.photoURL} alt="Avatar" className="w-14 h-14 rounded-full border-2 border-white shadow-md" />}
+                <div className="min-h-screen p-4 md:p-8 animate-in bg-slate-50">
+                    <div className="max-w-7xl mx-auto mb-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-6 border-b border-slate-200 pb-10">
+                        <div className="flex items-center gap-5">
+                            {user.photoURL && <img src={user.photoURL} alt="Avatar" className="w-16 h-16 rounded-3xl border-4 border-white shadow-xl rotate-3" />}
                             <div>
-                                <h1 className="text-3xl font-black text-slate-800 tracking-tighter">工程記帳系統</h1>
-                                <p className="text-slate-500 text-xs font-bold flex items-center gap-1">
-                                    <Icon name="user" size={10} /> Hi, {user.displayName}
-                                </p>
+                                <h1 className="text-4xl font-black text-slate-800 tracking-tighter">工程記帳<span className="text-blue-600">系統</span></h1>
+                                <div className="flex items-center gap-2 mt-1">
+                                    <div className="px-2 py-0.5 bg-emerald-500 text-white text-[9px] font-black rounded-md uppercase tracking-widest">Cloud Online</div>
+                                    <p className="text-slate-400 text-xs font-bold">{user.displayName}</p>
+                                </div>
                             </div>
                         </div>
-                        <div className="flex gap-2">
-                            <button onClick={() => setShowModal({ type: 'contract' })} className="bg-blue-600 text-white px-5 py-2.5 rounded-xl flex items-center gap-2 shadow-lg active:scale-95 text-sm font-bold transition-all"><Icon name="plus" size={18} /> 新增合約</button>
-                            <button onClick={handleLogout} className="bg-white text-slate-400 border px-5 py-2.5 rounded-xl text-sm font-bold hover:bg-slate-50 transition-all">登出系統</button>
+                        <div className="flex gap-3">
+                            <button onClick={() => setShowModal({ type: 'contract' })} className="bg-blue-600 text-white px-7 py-3.5 rounded-2xl flex items-center gap-2 shadow-2xl shadow-blue-200 active:scale-95 text-base font-black transition-all hover:bg-blue-700"><Icon name="plus" size={20} /> 新增合約</button>
+                            <button onClick={handleLogout} className="bg-white text-slate-400 border-2 border-slate-100 px-6 py-3.5 rounded-2xl text-base font-black hover:bg-slate-50 transition-all active:scale-95">登出</button>
                         </div>
                     </div>
 
-                    <div className="max-w-7xl mx-auto mb-6 flex gap-4">
-                        <select value={filterYear} onChange={e => setFilterYear(e.target.value)} className="p-2.5 bg-white border rounded-xl text-sm outline-none shadow-sm font-bold cursor-pointer">
+                    <div className="max-w-7xl mx-auto mb-8 flex gap-3 overflow-x-auto pb-2 no-scrollbar">
+                        <select value={filterYear} onChange={e => setFilterYear(e.target.value)} className="p-4 bg-white border-2 border-slate-100 rounded-[1.25rem] text-sm outline-none shadow-sm font-black min-w-[120px] focus:border-blue-500 transition-all">
                             <option value="2024">2024 年度</option>
                             <option value="2025">2025 年度</option>
                             <option value="2026">2026 年度</option>
                         </select>
-                        <select value={filterCompany} onChange={e => setFilterCompany(e.target.value)} className="p-2.5 bg-white border rounded-xl text-sm outline-none shadow-sm font-bold cursor-pointer">
-                            <option value="All">所有業主公司</option>
+                        <select value={filterCompany} onChange={e => setFilterCompany(e.target.value)} className="p-4 bg-white border-2 border-slate-100 rounded-[1.25rem] text-sm outline-none shadow-sm font-black flex-grow focus:border-blue-500 transition-all">
+                            <option value="All">所有業主公司資料</option>
                             {[...new Set(contracts.map(c => c.owner))].map(o => <option key={o} value={o}>{o}</option>)}
                         </select>
                     </div>
 
                     <div className="max-w-7xl mx-auto space-y-8">
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 font-black">
-                            <div className="bg-white p-7 rounded-3xl border shadow-sm flex items-center gap-5 transition-transform hover:scale-[1.02]">
-                                <div className="p-4 bg-indigo-500 text-white rounded-2xl shadow-lg shadow-indigo-100"><Icon name="dollar-sign" size={28} /></div>
-                                <div><p className="text-[10px] text-slate-400 uppercase tracking-widest mb-1">合約總額</p><p className="text-3xl tracking-tighter text-slate-800">${filteredStats.reduce((a, b) => a + Number(b.totalAmount), 0).toLocaleString()}</p></div>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            <div className="bg-white p-8 rounded-[2.5rem] border-2 border-slate-50 shadow-sm flex items-center gap-6 transition-transform hover:scale-[1.02]">
+                                <div className="p-5 bg-indigo-600 text-white rounded-3xl shadow-xl shadow-indigo-100"><Icon name="dollar-sign" size={32} /></div>
+                                <div><p className="text-[11px] text-slate-400 font-black uppercase tracking-widest mb-1">合約總額</p><p className="text-3xl font-black text-slate-800">${filteredStats.reduce((a, b) => a + Number(b.totalAmount), 0).toLocaleString()}</p></div>
                             </div>
-                            <div className="bg-white p-7 rounded-3xl border shadow-sm flex items-center gap-5 transition-transform hover:scale-[1.02]">
-                                <div className="p-4 bg-emerald-500 text-white rounded-2xl shadow-lg shadow-emerald-100"><Icon name="check-circle" size={28} /></div>
-                                <div><p className="text-[10px] text-slate-400 uppercase tracking-widest mb-1">業主已付</p><p className="text-3xl tracking-tighter text-emerald-600">${filteredStats.reduce((a, b) => a + b.ownerPaid, 0).toLocaleString()}</p></div>
+                            <div className="bg-white p-8 rounded-[2.5rem] border-2 border-slate-50 shadow-sm flex items-center gap-6 transition-transform hover:scale-[1.02]">
+                                <div className="p-5 bg-emerald-600 text-white rounded-3xl shadow-xl shadow-emerald-100"><Icon name="check-circle" size={32} /></div>
+                                <div><p className="text-[11px] text-slate-400 font-black uppercase tracking-widest mb-1">業主已付</p><p className="text-3xl font-black text-emerald-600">${filteredStats.reduce((a, b) => a + b.ownerPaid, 0).toLocaleString()}</p></div>
                             </div>
-                            <div className="bg-white p-7 rounded-3xl border shadow-sm flex items-center gap-5 transition-transform hover:scale-[1.02]">
-                                <div className="p-4 bg-amber-500 text-white rounded-2xl shadow-lg shadow-amber-100"><Icon name="clock" size={28} /></div>
-                                <div><p className="text-[10px] text-slate-400 uppercase tracking-widest mb-1">待結保留款</p><p className="text-3xl tracking-tighter text-amber-500">${filteredStats.reduce((a, b) => a + b.retentionAmount, 0).toLocaleString()}</p></div>
+                            <div className="bg-white p-8 rounded-[2.5rem] border-2 border-slate-50 shadow-sm flex items-center gap-6 transition-transform hover:scale-[1.02]">
+                                <div className="p-5 bg-amber-600 text-white rounded-3xl shadow-xl shadow-amber-100"><Icon name="clock" size={32} /></div>
+                                <div><p className="text-[11px] text-slate-400 font-black uppercase tracking-widest mb-1">待領保留款</p><p className="text-3xl font-black text-amber-500">${filteredStats.reduce((a, b) => a + b.retentionAmount, 0).toLocaleString()}</p></div>
                             </div>
                         </div>
 
-                        <div className="bg-white rounded-[2rem] border shadow-sm overflow-hidden border-slate-200">
-                            <table className="w-full text-left">
-                                <thead className="bg-slate-50 text-[10px] font-black uppercase text-slate-400 border-b tracking-widest">
-                                    <tr>
-                                        <th className="px-8 py-5">合約名稱 / 業主公司</th>
-                                        <th className="px-8 py-5">合約總額</th>
-                                        <th className="px-8 py-5 text-emerald-600">業主已收款</th>
-                                        <th className="px-8 py-5 text-amber-600">待領保留款</th>
-                                        <th className="px-8 py-5 text-right">管理操作</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100">
-                                    {filteredStats.map(item => (
-                                        <tr key={item.id} className="hover:bg-slate-50/50 transition-colors group">
-                                            <td className="px-8 py-6">
-                                                <div className="font-bold text-slate-700 text-lg leading-tight">{item.name}</div>
-                                                <div className="text-[11px] text-slate-400 font-bold mt-1.5 flex items-center gap-1 uppercase">
-                                                    <Icon name="building" size={12} /> {item.owner}
-                                                </div>
-                                            </td>
-                                            <td className="px-8 py-6 text-sm font-bold text-slate-500 font-mono">${Number(item.totalAmount).toLocaleString()}</td>
-                                            <td className="px-8 py-6 font-black text-emerald-600 text-lg font-mono">${item.ownerPaid.toLocaleString()}</td>
-                                            <td className="px-8 py-6">
-                                                <div className={`font-black text-lg font-mono ${item.alerts.retentionExpiring ? "text-rose-500 animate-pulse" : "text-amber-500"}`}>
-                                                    ${item.retentionAmount.toLocaleString()}
-                                                </div>
-                                                <div className="text-[10px] text-slate-300 font-bold mt-1 flex items-center gap-1 uppercase">
-                                                    <Icon name="calendar" size={10} /> 到期: {item.retentionExpiry || '--'}
-                                                </div>
-                                            </td>
-                                            <td className="px-8 py-6 text-right flex justify-end gap-2 items-center">
-                                                <button onClick={() => { setFormData({...formData, type: 'owner'}); setShowModal({type: 'payment', contractId: item.id}); }} className="p-3 bg-blue-50 text-blue-600 rounded-2xl hover:bg-blue-600 hover:text-white transition-all shadow-sm"><Icon name="plus" size={20} /></button>
-                                                <button onClick={() => handleDeleteContract(item.id)} className="p-3 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-2xl transition-all opacity-0 group-hover:opacity-100"><Icon name="trash-2" size={20} /></button>
-                                            </td>
+                        <div className="bg-white rounded-[2.5rem] border-2 border-slate-50 shadow-sm overflow-hidden">
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left">
+                                    <thead className="bg-slate-50/50 text-[10px] font-black uppercase text-slate-400 border-b tracking-widest">
+                                        <tr>
+                                            <th className="px-10 py-6">合約名稱 / 業主公司</th>
+                                            <th className="px-10 py-6">總額 (NT$)</th>
+                                            <th className="px-10 py-6 text-emerald-600">已收款項</th>
+                                            <th className="px-10 py-6 text-amber-600">待領保留</th>
+                                            <th className="px-10 py-6 text-right">管理</th>
                                         </tr>
-                                    ))}
-                                    {filteredStats.length === 0 && (
-                                        <tr><td colSpan="5" className="px-6 py-24 text-center text-slate-300 italic font-bold">目前無此篩選條件下的紀錄</td></tr>
-                                    )}
-                                </tbody>
-                            </table>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                        {filteredStats.map(item => (
+                                            <tr key={item.id} className="hover:bg-slate-50/50 transition-colors group">
+                                                <td className="px-10 py-8">
+                                                    <div className="font-black text-slate-700 text-xl tracking-tight">{item.name}</div>
+                                                    <div className="text-xs text-slate-400 font-bold mt-1.5 flex items-center gap-1">
+                                                        <Icon name="building" size={12} /> {item.owner}
+                                                    </div>
+                                                </td>
+                                                <td className="px-10 py-8 text-base font-bold text-slate-500 font-mono">${Number(item.totalAmount).toLocaleString()}</td>
+                                                <td className="px-10 py-8 font-black text-emerald-600 text-xl font-mono">${item.ownerPaid.toLocaleString()}</td>
+                                                <td className="px-10 py-8">
+                                                    <div className={`font-black text-xl font-mono ${item.alerts.retentionExpiring ? "text-rose-500 animate-pulse" : "text-amber-500"}`}>
+                                                        ${item.retentionAmount.toLocaleString()}
+                                                    </div>
+                                                    <div className="text-[10px] text-slate-300 font-bold mt-1 flex items-center gap-1 uppercase">
+                                                        <Icon name="calendar" size={10} /> 到期: {item.retentionExpiry || '--'}
+                                                    </div>
+                                                </td>
+                                                <td className="px-10 py-8 text-right flex justify-end gap-3 items-center">
+                                                    <button onClick={() => { setFormData({...formData, type: 'owner'}); setShowModal({type: 'payment', contractId: item.id}); }} className="p-4 bg-blue-50 text-blue-600 rounded-[1.25rem] hover:bg-blue-600 hover:text-white transition-all shadow-sm active:scale-90"><Icon name="plus" size={24} /></button>
+                                                    <button onClick={() => handleDeleteContract(item.id)} className="p-4 text-slate-200 hover:text-rose-500 hover:bg-rose-50 rounded-[1.25rem] transition-all opacity-0 group-hover:opacity-100"><Icon name="trash-2" size={24} /></button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                        {filteredStats.length === 0 && (
+                                            <tr><td colSpan="5" className="px-6 py-32 text-center text-slate-300 italic font-black text-lg">目前尚無紀錄</td></tr>
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
 
                     {showModal && (
                         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-50 flex items-center justify-center p-4">
-                            <div className="bg-white rounded-[2rem] shadow-2xl w-full max-w-md animate-in overflow-hidden">
-                                <div className="p-7 border-b flex justify-between items-center bg-slate-50/50">
-                                    <h3 className="font-black text-xl text-slate-800 tracking-tighter">{showModal.type === 'contract' ? '新建工程合約' : '記錄已收款項'}</h3>
+                            <div className="bg-white rounded-[3rem] shadow-2xl w-full max-w-md animate-in overflow-hidden border-4 border-white">
+                                <div className="p-8 border-b flex justify-between items-center bg-slate-50/50">
+                                    <h3 className="font-black text-2xl text-slate-800 tracking-tighter">{showModal.type === 'contract' ? '新建工程合約' : '記錄已收款項'}</h3>
                                     <button onClick={() => setShowModal(null)} className="p-2 text-slate-300 hover:text-slate-600 transition-colors">✕</button>
                                 </div>
-                                <div className="p-8 space-y-5">
+                                <div className="p-10 space-y-6">
                                     {showModal.type === 'contract' ? (
                                         <>
-                                            <div className="space-y-1.5">
-                                                <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">合約名稱</label>
-                                                <input type="text" placeholder="例如：101大樓機電工程" className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-bold outline-none focus:border-blue-500 focus:bg-white transition-all" onChange={e => setFormData({...formData, name: e.target.value})} />
+                                            <div className="space-y-2">
+                                                <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">合約名稱</label>
+                                                <input type="text" placeholder="輸入案名" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-3xl text-base font-black outline-none focus:border-blue-500 focus:bg-white transition-all shadow-inner" onChange={e => setFormData({...formData, name: e.target.value})} />
                                             </div>
-                                            <div className="space-y-1.5">
-                                                <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">業主公司</label>
-                                                <input type="text" placeholder="輸入公司名稱" className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-bold outline-none focus:border-blue-500 focus:bg-white transition-all" onChange={e => setFormData({...formData, owner: e.target.value})} />
+                                            <div className="space-y-2">
+                                                <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">業主公司</label>
+                                                <input type="text" placeholder="公司全名" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-3xl text-base font-black outline-none focus:border-blue-500 focus:bg-white transition-all shadow-inner" onChange={e => setFormData({...formData, owner: e.target.value})} />
                                             </div>
-                                            <div className="space-y-1.5">
-                                                <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">合約總額 (NT$)</label>
-                                                <input type="number" placeholder="0" className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-bold outline-none focus:border-blue-500 focus:bg-white transition-all" onChange={e => setFormData({...formData, totalAmount: e.target.value})} />
+                                            <div className="space-y-2">
+                                                <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">合約總額 (NT$)</label>
+                                                <input type="number" placeholder="0" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-3xl text-lg font-black outline-none focus:border-blue-500 focus:bg-white transition-all shadow-inner font-mono" onChange={e => setFormData({...formData, totalAmount: e.target.value})} />
                                             </div>
-                                            <div className="grid grid-cols-2 gap-4">
-                                                <div className="space-y-1.5">
-                                                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">保留款 %</label>
-                                                    <input type="number" defaultValue="10" className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-bold outline-none focus:border-blue-500 focus:bg-white transition-all" onChange={e => setFormData({...formData, retentionRate: e.target.value})} />
+                                            <div className="grid grid-cols-2 gap-5">
+                                                <div className="space-y-2">
+                                                    <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">保留 %</label>
+                                                    <input type="number" defaultValue="10" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-3xl text-base font-black outline-none focus:border-blue-500 focus:bg-white transition-all shadow-inner" onChange={e => setFormData({...formData, retentionRate: e.target.value})} />
                                                 </div>
-                                                <div className="space-y-1.5">
-                                                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">到期日期</label>
-                                                    <input type="date" className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-bold outline-none focus:border-blue-500 focus:bg-white transition-all" onChange={e => setFormData({...formData, retentionExpiry: e.target.value})} />
+                                                <div className="space-y-2">
+                                                    <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">到期日</label>
+                                                    <input type="date" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-3xl text-sm font-black outline-none focus:border-blue-500 focus:bg-white transition-all shadow-inner" onChange={e => setFormData({...formData, retentionExpiry: e.target.value})} />
                                                 </div>
                                             </div>
-                                            <button onClick={handleSaveContract} className="w-full py-5 bg-blue-600 text-white font-black rounded-2xl shadow-xl shadow-blue-100 hover:bg-blue-700 transition-all active:scale-[0.98] mt-2 text-lg tracking-tighter">確認建立合約</button>
+                                            <button onClick={handleSaveContract} className="w-full py-6 bg-blue-600 text-white font-black rounded-3xl shadow-2xl shadow-blue-100 hover:bg-blue-700 transition-all active:scale-[0.98] mt-4 text-xl tracking-tighter">確認建立</button>
                                         </>
                                     ) : (
                                         <>
-                                            <div className="space-y-1.5 text-center p-4 bg-emerald-50 rounded-2xl border-2 border-emerald-100 mb-2">
-                                                <p className="text-xs text-emerald-600 font-black tracking-widest uppercase mb-1">正在記錄已收款項</p>
-                                                <p className="text-emerald-800 font-bold text-sm">請填寫實際入帳金額與發票資訊</p>
+                                            <div className="space-y-2">
+                                                <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">收款金額 (NT$)</label>
+                                                <input type="number" placeholder="0" className="w-full p-5 bg-emerald-50 border-2 border-emerald-100 rounded-3xl text-lg font-black outline-none focus:border-emerald-500 focus:bg-white transition-all shadow-inner font-mono" onChange={e => setFormData({...formData, amount: e.target.value})} />
                                             </div>
-                                            <div className="space-y-1.5">
-                                                <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">入帳金額 (NT$)</label>
-                                                <input type="number" placeholder="0" className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-bold outline-none focus:border-emerald-500 focus:bg-white transition-all" onChange={e => setFormData({...formData, amount: e.target.value})} />
-                                            </div>
-                                            <div className="grid grid-cols-2 gap-4">
-                                                <div className="space-y-1.5">
-                                                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">發票號碼</label>
-                                                    <input type="text" placeholder="AB-..." className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-bold outline-none focus:border-emerald-500 focus:bg-white transition-all uppercase" onChange={e => setFormData({...formData, invoiceNo: e.target.value})} />
+                                            <div className="grid grid-cols-2 gap-5">
+                                                <div className="space-y-2">
+                                                    <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">發票號碼</label>
+                                                    <input type="text" placeholder="AB-..." className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-3xl text-sm font-black outline-none focus:border-emerald-500 focus:bg-white transition-all shadow-inner uppercase" onChange={e => setFormData({...formData, invoiceNo: e.target.value})} />
                                                 </div>
-                                                <div className="space-y-1.5">
-                                                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">發票日期</label>
-                                                    <input type="date" className="w-full p-4 bg-slate-50 border-2 border-slate-100 rounded-2xl text-sm font-bold outline-none focus:border-emerald-500 focus:bg-white transition-all" onChange={e => setFormData({...formData, invoiceDate: e.target.value})} />
+                                                <div className="space-y-2">
+                                                    <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">發票日期</label>
+                                                    <input type="date" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-3xl text-xs font-black outline-none focus:border-emerald-500 focus:bg-white transition-all shadow-inner" onChange={e => setFormData({...formData, invoiceDate: e.target.value})} />
                                                 </div>
                                             </div>
-                                            <button onClick={handleSavePayment} className="w-full py-5 bg-emerald-600 text-white font-black rounded-2xl shadow-xl shadow-emerald-100 hover:bg-emerald-700 transition-all active:scale-[0.98] mt-2 text-lg tracking-tighter">確認存入雲端</button>
+                                            <button onClick={handleSavePayment} className="w-full py-6 bg-emerald-600 text-white font-black rounded-3xl shadow-2xl shadow-emerald-100 hover:bg-emerald-700 transition-all active:scale-[0.98] mt-4 text-xl tracking-tighter">確認存入雲端</button>
                                         </>
                                     )}
                                 </div>
