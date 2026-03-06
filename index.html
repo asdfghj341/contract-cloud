@@ -16,10 +16,10 @@
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, onAuthStateChanged, signInWithRedirect, getRedirectResult, GoogleAuthProvider, signOut, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, onAuthStateChanged, signInWithRedirect, signInWithPopup, getRedirectResult, GoogleAuthProvider, signOut, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        window.Firebase = { initializeApp, getAuth, onAuthStateChanged, signInWithRedirect, getRedirectResult, GoogleAuthProvider, signOut, setPersistence, browserLocalPersistence, getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query };
+        window.Firebase = { initializeApp, getAuth, onAuthStateChanged, signInWithRedirect, signInWithPopup, getRedirectResult, GoogleAuthProvider, signOut, setPersistence, browserLocalPersistence, getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query };
     </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap');
@@ -36,7 +36,7 @@
 
     <script type="text/babel">
         const { useState, useMemo, useEffect, useRef } = React;
-        const { initializeApp, getAuth, onAuthStateChanged, signInWithRedirect, getRedirectResult, GoogleAuthProvider, signOut, setPersistence, browserLocalPersistence, getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query } = window.Firebase || {};
+        const { initializeApp, getAuth, onAuthStateChanged, signInWithRedirect, signInWithPopup, getRedirectResult, GoogleAuthProvider, signOut, setPersistence, browserLocalPersistence, getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query } = window.Firebase || {};
 
         // --- Firebase 設定 ---
         const firebaseConfig = {
@@ -80,7 +80,7 @@
             const [contracts, setContracts] = useState([]);
             const [ownerPayments, setOwnerPayments] = useState([]);
             const [isLoading, setIsLoading] = useState(true);
-            const [authChecked, setAuthChecked] = useState(false); 
+            const [authProcessing, setAuthProcessing] = useState(true); // 是否正在處理認證程序
             const [error, setError] = useState(null);
             const [copySuccess, setCopySuccess] = useState(false);
 
@@ -93,56 +93,51 @@
                 amount: '', invoiceNo: '', invoiceDate: ''
             });
 
-            // 1. 核心認證修復邏輯 (專治 Safari 迴圈)
+            // 1. 深度強化版認證處理
             useEffect(() => {
                 if (!auth) return;
 
-                const runAuthCheck = async () => {
+                const initAuth = async () => {
                     try {
-                        // 步驟 A: 強制設定持久化
+                        // 強制設定本地持久化
                         await setPersistence(auth, browserLocalPersistence);
                         
-                        // 步驟 B: 獲取 Redirect 結果
+                        // 檢查是否剛從 Redirect 回來
                         const result = await getRedirectResult(auth);
                         if (result?.user) {
                             setUser(result.user);
-                            setAuthChecked(true);
-                            return;
+                        } else if (auth.currentUser) {
+                            setUser(auth.currentUser);
                         }
-
-                        // 步驟 C: 針對 Safari 進行延遲判定 (給予瀏覽器時間讀取 IndexedDB)
-                        setTimeout(() => {
-                            if (auth.currentUser) {
-                                setUser(auth.currentUser);
-                            }
-                            setAuthChecked(true);
-                        }, 1000);
-
                     } catch (err) {
                         console.error("認證初始化異常:", err);
                         if (err.code === 'auth/unauthorized-domain') {
-                            setError(`網域未授權：請將「${window.location.hostname}」加入 Firebase Console。`);
+                            setError(`網域未授權：請在 Firebase 設定中授權「${window.location.hostname}」。`);
                         } else {
-                            setError(`登入異常: ${err.message}`);
+                            setError(`認證失敗: ${err.message}`);
                         }
-                        setAuthChecked(true);
+                    } finally {
+                        // 處理完畢，清除 sessionStorage 的標籤並關閉載入畫面
+                        sessionStorage.removeItem('pending_login');
+                        setAuthProcessing(false);
                     }
                 };
 
-                runAuthCheck();
+                initAuth();
 
                 const unsubscribe = onAuthStateChanged(auth, (u) => {
                     if (u) {
                         setUser(u);
                         setError(null);
-                        setAuthChecked(true);
+                        setAuthProcessing(false);
+                        sessionStorage.removeItem('pending_login');
                     }
                 });
                 
                 return () => unsubscribe();
             }, []);
 
-            // 2. 監聽 Firestore 資料
+            // 2. 資料監聽
             useEffect(() => {
                 if (!user || !db) return;
                 setIsLoading(true);
@@ -154,7 +149,7 @@
                     setContracts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
                     setIsLoading(false);
                 }, (err) => {
-                    console.error("Firestore 錯誤:", err);
+                    console.error("Firestore Error:", err);
                     setIsLoading(false);
                 });
 
@@ -171,12 +166,27 @@
             const handleGoogleLogin = async () => {
                 try {
                     setError(null);
-                    setAuthChecked(false); 
-                    await signInWithRedirect(auth, googleProvider);
+                    // 標記正在進行登入，防止跳轉回來的空窗期顯示登入介面
+                    sessionStorage.setItem('pending_login', 'true');
+                    setAuthProcessing(true);
+
+                    const isMessenger = /Line|FBAN|FBAV|Instagram/i.test(navigator.userAgent);
+                    
+                    if (isMessenger) {
+                        // App 內建瀏覽器：使用 Redirect
+                        await signInWithRedirect(auth, googleProvider);
+                    } else {
+                        // 一般瀏覽器 (Safari/Chrome)：使用 Popup，更穩定且不離開頁面
+                        const result = await signInWithPopup(auth, googleProvider);
+                        setUser(result.user);
+                        setAuthProcessing(false);
+                        sessionStorage.removeItem('pending_login');
+                    }
                 } catch (err) {
-                    console.error("發起登入失敗:", err);
-                    setError(`發起登入失敗: ${err.message}`);
-                    setAuthChecked(true);
+                    console.error("登入失敗:", err);
+                    setError(`登入失敗: ${err.message}`);
+                    setAuthProcessing(false);
+                    sessionStorage.removeItem('pending_login');
                 }
             };
 
@@ -258,22 +268,23 @@
                 await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'contracts', id));
             };
 
-            if (!authChecked) {
+            // --- 介面渲染控制 ---
+
+            // 如果正在認證程序中，或是有登入標籤在 sessionStorage 中，強制顯示載入中
+            const isPending = sessionStorage.getItem('pending_login') === 'true';
+            if (authProcessing || isPending) {
                 return (
-                    <div className="min-h-screen flex flex-col items-center justify-center bg-white">
-                        <div className="flex flex-col items-center">
-                            <div className="w-12 h-12 border-4 border-slate-100 border-t-blue-600 rounded-full animate-spin mb-4"></div>
-                            <h2 className="text-slate-800 font-black text-lg italic">Security Checking...</h2>
-                            <p className="text-slate-400 text-[10px] font-bold tracking-[0.3em] uppercase">正在同步雲端安全認證</p>
-                        </div>
+                    <div className="min-h-screen flex flex-col items-center justify-center bg-white p-6">
+                        <div className="w-16 h-16 border-4 border-slate-100 border-t-blue-600 rounded-full animate-spin mb-6"></div>
+                        <h2 className="text-xl font-black text-slate-800 mb-2">安全連線中</h2>
+                        <p className="text-slate-400 text-sm font-medium animate-pulse tracking-widest uppercase">正在驗證您的 Google 雲端帳號...</p>
+                        <p className="text-[10px] text-slate-300 mt-10">若卡在此畫面超過 10 秒，請嘗試重新整理</p>
                     </div>
                 );
             }
 
+            // 確定未登入
             if (!user) {
-                const isMessenger = /Line|FBAN|FBAV|Instagram/i.test(navigator.userAgent);
-                const isSafari = /Safari/i.test(navigator.userAgent) && !/Chrome/i.test(navigator.userAgent);
-
                 return (
                     <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6 animate-in">
                         <div className="bg-white p-8 md:p-12 rounded-[3rem] shadow-2xl max-w-sm w-full text-center border-4 border-white">
@@ -283,15 +294,13 @@
                             <h1 className="text-3xl font-black text-slate-800 mb-2">雲端記帳系統</h1>
                             <p className="text-slate-400 mb-10 font-bold uppercase tracking-widest text-[10px]">Construction Accounting</p>
                             
-                            {(isMessenger || isSafari) && (
-                                <div className="bg-amber-50 text-amber-800 text-[11px] p-4 rounded-2xl mb-8 text-left border border-amber-200 leading-relaxed font-black shadow-sm">
-                                    <div className="flex gap-2 mb-1">
-                                        <Icon name="alert-triangle" size={14} className="shrink-0" />
-                                        <span>給 iPhone / Safari 使用者</span>
-                                    </div>
-                                    <p>若無法登入，請進入手機「設定」>「Safari」> 關閉「阻擋所有 Cookie」與「防止跨站追蹤」。或點擊「複製網址」改用 Chrome 開啟。</p>
+                            <div className="bg-blue-50 text-blue-800 text-[11px] p-4 rounded-2xl mb-8 text-left border border-blue-200 leading-relaxed font-black shadow-sm">
+                                <div className="flex gap-2 mb-1">
+                                    <Icon name="info" size={14} className="shrink-0" />
+                                    <span>登入小撇步</span>
                                 </div>
-                            )}
+                                <p>手機 Safari 若登入失敗，請先確認「設定 > Safari」內未開啟「防止跨站追蹤」。若依舊失敗，請點選下方複製網址改用 Chrome。</p>
+                            </div>
 
                             {error && (
                                 <div className="bg-rose-50 text-rose-600 text-xs p-4 rounded-2xl mb-6 text-left border border-rose-200 font-bold">{error}</div>
@@ -312,13 +321,14 @@
 
                             <button onClick={handleCopyUrl} className={`w-full flex items-center justify-center gap-2 py-4 rounded-[1.25rem] font-black text-xs transition-all ${copySuccess ? 'bg-emerald-500 text-white shadow-lg' : 'bg-slate-100 text-slate-500'}`}>
                                 <Icon name={copySuccess ? "check" : "copy"} size={14} />
-                                {copySuccess ? "網址已複製" : "複製網址 (使用 Chrome)"}
+                                {copySuccess ? "網址已複製！" : "複製網址 (使用 Chrome)"}
                             </button>
                         </div>
                     </div>
                 );
             }
 
+            // 已登入
             return (
                 <div className="min-h-screen p-4 md:p-10 animate-in bg-slate-50 pb-20">
                     <header className="max-w-7xl mx-auto mb-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-6 border-b border-slate-200 pb-10">
@@ -377,7 +387,7 @@
                                             <th className="px-10 py-8">合約總額</th>
                                             <th className="px-10 py-8 text-emerald-600">已收款</th>
                                             <th className="px-10 py-8 text-amber-600">待領保留款</th>
-                                            <th className="px-10 py-8 text-right">操作</th>
+                                            <th className="px-10 py-8 text-right">管理</th>
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
