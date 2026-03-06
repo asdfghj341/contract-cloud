@@ -58,7 +58,6 @@
                 auth = getAuth(app);
                 db = getFirestore(app);
                 googleProvider = new GoogleAuthProvider();
-                // 提高權限級別，解決 Safari 的 Session 遺失問題
                 googleProvider.setCustomParameters({ prompt: 'select_account' });
             }
         } catch (e) {
@@ -81,7 +80,7 @@
             const [contracts, setContracts] = useState([]);
             const [ownerPayments, setOwnerPayments] = useState([]);
             const [isLoading, setIsLoading] = useState(true);
-            const [authChecked, setAuthChecked] = useState(false); // 狀態鎖
+            const [authChecked, setAuthChecked] = useState(false); 
             const [error, setError] = useState(null);
             const [copySuccess, setCopySuccess] = useState(false);
 
@@ -94,44 +93,44 @@
                 amount: '', invoiceNo: '', invoiceDate: ''
             });
 
-            // 1. 深度優化認證 (解決手機 Safari 登入跳回問題)
+            // 1. 核心認證修復邏輯 (專治 Safari 迴圈)
             useEffect(() => {
                 if (!auth) return;
 
-                const checkAuth = async () => {
+                const runAuthCheck = async () => {
                     try {
-                        // A. 強制本地持久化，這是防止跳轉後掉狀態的關鍵
+                        // 步驟 A: 強制設定持久化
                         await setPersistence(auth, browserLocalPersistence);
                         
-                        // B. 優先嘗試獲取重新定向的結果
-                        const redirectResult = await getRedirectResult(auth);
-                        
-                        if (redirectResult?.user) {
-                            setUser(redirectResult.user);
-                            console.log("Redirect 登入成功:", redirectResult.user.displayName);
-                        } else {
-                            // C. 如果沒有跳轉結果，才檢查目前 Session 是否有使用者
-                            const currentUser = auth.currentUser;
-                            if (currentUser) {
-                                setUser(currentUser);
-                            }
+                        // 步驟 B: 獲取 Redirect 結果
+                        const result = await getRedirectResult(auth);
+                        if (result?.user) {
+                            setUser(result.user);
+                            setAuthChecked(true);
+                            return;
                         }
+
+                        // 步驟 C: 針對 Safari 進行延遲判定 (給予瀏覽器時間讀取 IndexedDB)
+                        setTimeout(() => {
+                            if (auth.currentUser) {
+                                setUser(auth.currentUser);
+                            }
+                            setAuthChecked(true);
+                        }, 1000);
+
                     } catch (err) {
-                        console.error("認證錯誤:", err);
+                        console.error("認證初始化異常:", err);
                         if (err.code === 'auth/unauthorized-domain') {
                             setError(`網域未授權：請將「${window.location.hostname}」加入 Firebase Console。`);
-                        } else if (err.code !== 'auth/popup-closed-by-user') {
+                        } else {
                             setError(`登入異常: ${err.message}`);
                         }
-                    } finally {
-                        // 延遲 500ms 結束載入，給予瀏覽器足夠時間處理 Session
-                        setTimeout(() => setAuthChecked(true), 500);
+                        setAuthChecked(true);
                     }
                 };
 
-                checkAuth();
+                runAuthCheck();
 
-                // 同時監聽狀態變動，作為雙重保險
                 const unsubscribe = onAuthStateChanged(auth, (u) => {
                     if (u) {
                         setUser(u);
@@ -170,10 +169,9 @@
             }, [user]);
 
             const handleGoogleLogin = async () => {
-                if (!authChecked) return;
                 try {
                     setError(null);
-                    setAuthChecked(false); // 鎖定 UI，顯示載入動畫
+                    setAuthChecked(false); 
                     await signInWithRedirect(auth, googleProvider);
                 } catch (err) {
                     console.error("發起登入失敗:", err);
@@ -256,26 +254,22 @@
             };
 
             const handleDeleteContract = async (id) => {
-                if (!user || !db || !confirm('確定要刪除嗎？這將從雲端資料庫永久移除。')) return;
+                if (!user || !db || !confirm('確定要刪除嗎？')) return;
                 await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'contracts', id));
             };
 
-            // --- 介面流程控制 ---
-
-            // A. 初始化：當 authChecked 為 false 時，絕不顯示登入畫面，只顯示 Loading
             if (!authChecked) {
                 return (
                     <div className="min-h-screen flex flex-col items-center justify-center bg-white">
                         <div className="flex flex-col items-center">
                             <div className="w-12 h-12 border-4 border-slate-100 border-t-blue-600 rounded-full animate-spin mb-4"></div>
-                            <h2 className="text-slate-800 font-black text-lg">正在登入中</h2>
-                            <p className="text-slate-400 text-xs font-bold tracking-widest uppercase">請稍候，正在同步雲端帳號資訊...</p>
+                            <h2 className="text-slate-800 font-black text-lg italic">Security Checking...</h2>
+                            <p className="text-slate-400 text-[10px] font-bold tracking-[0.3em] uppercase">正在同步雲端安全認證</p>
                         </div>
                     </div>
                 );
             }
 
-            // B. 認證完成且確定沒有使用者
             if (!user) {
                 const isMessenger = /Line|FBAN|FBAV|Instagram/i.test(navigator.userAgent);
                 const isSafari = /Safari/i.test(navigator.userAgent) && !/Chrome/i.test(navigator.userAgent);
@@ -293,9 +287,9 @@
                                 <div className="bg-amber-50 text-amber-800 text-[11px] p-4 rounded-2xl mb-8 text-left border border-amber-200 leading-relaxed font-black shadow-sm">
                                     <div className="flex gap-2 mb-1">
                                         <Icon name="alert-triangle" size={14} className="shrink-0" />
-                                        <span>重要：手機使用者登入異常？</span>
+                                        <span>給 iPhone / Safari 使用者</span>
                                     </div>
-                                    <p>若選好帳號後沒登入成功，請點擊「複製網址」按鈕，並手動貼到手機的 Chrome 瀏覽器開啟即可解決。</p>
+                                    <p>若無法登入，請進入手機「設定」>「Safari」> 關閉「阻擋所有 Cookie」與「防止跨站追蹤」。或點擊「複製網址」改用 Chrome 開啟。</p>
                                 </div>
                             )}
 
@@ -318,14 +312,13 @@
 
                             <button onClick={handleCopyUrl} className={`w-full flex items-center justify-center gap-2 py-4 rounded-[1.25rem] font-black text-xs transition-all ${copySuccess ? 'bg-emerald-500 text-white shadow-lg' : 'bg-slate-100 text-slate-500'}`}>
                                 <Icon name={copySuccess ? "check" : "copy"} size={14} />
-                                {copySuccess ? "網址已成功複製" : "複製網址 (使用 Chrome)"}
+                                {copySuccess ? "網址已複製" : "複製網址 (使用 Chrome)"}
                             </button>
                         </div>
                     </div>
                 );
             }
 
-            // C. 成功登入後的主介面
             return (
                 <div className="min-h-screen p-4 md:p-10 animate-in bg-slate-50 pb-20">
                     <header className="max-w-7xl mx-auto mb-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-6 border-b border-slate-200 pb-10">
@@ -464,11 +457,11 @@
                                             <div className="grid grid-cols-2 gap-6">
                                                 <div className="space-y-3">
                                                     <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">發票號碼</label>
-                                                    <input type="text" placeholder="AB-..." className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-3xl text-base font-black outline-none focus:border-emerald-600 focus:bg-white transition-all shadow-inner uppercase" onChange={e => setFormData({...formData, invoiceNo: e.target.value})} />
+                                                    <input type="text" placeholder="AB-..." className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-3xl text-base font-black outline-none focus:border-emerald-500 focus:bg-white transition-all shadow-inner uppercase" onChange={e => setFormData({...formData, invoiceNo: e.target.value})} />
                                                 </div>
                                                 <div className="space-y-3">
                                                     <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">發票日期</label>
-                                                    <input type="date" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-3xl text-xs font-black outline-none focus:border-emerald-600 focus:bg-white transition-all shadow-inner" onChange={e => setFormData({...formData, invoiceDate: e.target.value})} />
+                                                    <input type="date" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-3xl text-xs font-black outline-none focus:border-emerald-500 focus:bg-white transition-all shadow-inner" onChange={e => setFormData({...formData, invoiceDate: e.target.value})} />
                                                 </div>
                                             </div>
                                             <button onClick={handleSavePayment} className="w-full py-6.5 bg-emerald-600 text-white font-black rounded-[2.5rem] shadow-2xl shadow-emerald-100 hover:bg-emerald-700 transition-all active:scale-[0.98] mt-6 text-xl tracking-tighter uppercase">存入雲端數據</button>
