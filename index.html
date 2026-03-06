@@ -19,7 +19,7 @@
         import { getAuth, onAuthStateChanged, signInWithRedirect, signInWithPopup, getRedirectResult, GoogleAuthProvider, signOut, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, doc, addDoc, updateDoc, deleteDoc, onSnapshot, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        window.Firebase = { initializeApp, getAuth, onAuthStateChanged, signInWithRedirect, signInWithPopup, getRedirectResult, GoogleAuthProvider, signOut, setPersistence, browserLocalPersistence, getFirestore, collection, doc, addDoc, updateDoc, deleteDoc, onSnapshot, query };
+        window.Firebase = { initializeApp, getAuth, onAuthStateChanged, signInWithRedirect, signInWithPopup, getRedirectResult, GoogleAuthProvider, signOut, setPersistence, browserLocalPersistence, getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query };
     </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap');
@@ -99,7 +99,7 @@
 
             const showToast = (msg, type = "success") => {
                 setToast({ msg, type });
-                setTimeout(() => setToast(null), 3000);
+                setTimeout(() => setToast(null), 4000);
             };
 
             // 金額自動計算邏輯
@@ -155,7 +155,7 @@
                     setContracts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
                     setIsLoading(false);
                 }, (err) => {
-                    setError("資料庫存取被拒。請檢查 Firebase Console 設定。");
+                    setError("資料庫讀取失敗：請先點擊 Firebase 後台的「建立資料庫」並設定 Rules。");
                     setIsLoading(false);
                 });
 
@@ -215,6 +215,10 @@
             // --- 存檔動作 ---
             const handleSaveContract = async () => {
                 if (!user || !db) return;
+                if (!formData.name || !formData.amountInclTax) {
+                    showToast("請填寫合約名稱與金額", "error");
+                    return;
+                }
                 setIsSaving(true);
                 try {
                     const payload = {
@@ -242,7 +246,8 @@
                     setShowModal(null);
                     setFormData({ name: '', owner: '', amountExclTax: '', tax: '', amountInclTax: '', retentionRate: 10, retentionExpiry: '', hasRetention: false, type: 'owner', vendor: '' });
                 } catch (err) {
-                    setError("操作失敗: " + err.message);
+                    showToast("儲存失敗：請確認 Firestore 是否已建立", "error");
+                    console.error(err);
                 } finally {
                     setIsSaving(false);
                 }
@@ -250,6 +255,10 @@
 
             const handleSavePayment = async () => {
                 if (!user || !db) return;
+                if (!formData.amountInclTax || Number(formData.amountInclTax) <= 0) {
+                    showToast("請輸入有效的入帳金額", "error");
+                    return;
+                }
                 setIsSaving(true);
                 try {
                     const isOwner = formData.type === 'owner';
@@ -264,11 +273,12 @@
                         vendor: isOwner ? undefined : formData.vendor,
                         createdAt: Date.now()
                     });
-                    showToast(isOwner ? "業主收款已入帳" : "廠商付款已紀錄");
+                    showToast(isOwner ? "業主收款已成功入帳" : "廠商付款已成功紀錄");
                     setShowModal(null);
                     setFormData({ ...formData, amountExclTax: '', tax: '', amountInclTax: '', invoiceNo: '', invoiceDate: '', vendor: '' });
                 } catch (err) {
-                    setError("儲存款項失敗: " + err.message);
+                    showToast("同步失敗：雲端資料庫連線中斷", "error");
+                    console.error(err);
                 } finally {
                     setIsSaving(false);
                 }
@@ -356,18 +366,18 @@
                     </div>
 
                     <main className="max-w-7xl mx-auto space-y-12">
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 font-black text-slate-800">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 font-black text-slate-800 text-center">
                             <div className="bg-white p-10 rounded-[3rem] shadow-sm flex items-center gap-6 transition-transform hover:scale-[1.02]">
                                 <div className="p-6 bg-indigo-600 text-white rounded-3xl shadow-xl shadow-indigo-100"><Icon name="dollar-sign" size={36} /></div>
-                                <div><p className="text-[11px] text-slate-400 font-black uppercase tracking-[0.2em] mb-1">年度合約總額 (含稅)</p><p className="text-3xl tracking-tighter">${filteredStats.reduce((a, b) => a + b.totalIncl, 0).toLocaleString()}</p></div>
+                                <div className="text-left"><p className="text-[11px] text-slate-400 font-black uppercase tracking-[0.2em] mb-1">年度合約總額 (含稅)</p><p className="text-3xl tracking-tighter">${filteredStats.reduce((a, b) => a + b.totalIncl, 0).toLocaleString()}</p></div>
                             </div>
                             <div className="bg-white p-10 rounded-[3rem] shadow-sm flex items-center gap-6 transition-transform hover:scale-[1.02]">
                                 <div className="p-6 bg-emerald-600 text-white rounded-3xl shadow-xl shadow-emerald-100"><Icon name="check-circle" size={36} /></div>
-                                <div><p className="text-[11px] text-slate-400 font-black uppercase tracking-[0.2em] mb-1">業主累計付款 (含稅)</p><p className="text-3xl text-emerald-600 tracking-tighter">${filteredStats.reduce((a, b) => a + b.ownerPaid, 0).toLocaleString()}</p></div>
+                                <div className="text-left"><p className="text-[11px] text-slate-400 font-black uppercase tracking-[0.2em] mb-1">業主累計付款 (含稅)</p><p className="text-3xl text-emerald-600 tracking-tighter">${filteredStats.reduce((a, b) => a + b.ownerPaid, 0).toLocaleString()}</p></div>
                             </div>
                             <div className="bg-white p-10 rounded-[3rem] shadow-sm flex items-center gap-6 transition-transform hover:scale-[1.02]">
                                 <div className="p-6 bg-amber-600 text-white rounded-3xl shadow-xl shadow-amber-100"><Icon name="clock" size={36} /></div>
-                                <div><p className="text-[11px] text-slate-400 font-black uppercase tracking-[0.2em] mb-1">預計可領保留款</p><p className="text-3xl text-amber-500 tracking-tighter">${filteredStats.reduce((a, b) => a + b.retentionAmount, 0).toLocaleString()}</p></div>
+                                <div className="text-left"><p className="text-[11px] text-slate-400 font-black uppercase tracking-[0.2em] mb-1">預計可領保留款</p><p className="text-3xl text-amber-500 tracking-tighter">${filteredStats.reduce((a, b) => a + b.retentionAmount, 0).toLocaleString()}</p></div>
                             </div>
                         </div>
 
@@ -526,8 +536,12 @@
                                                 </div>
                                             </div>
                                             
-                                            <button onClick={handleSavePayment} disabled={isSaving} className={`w-full py-6 text-white font-black rounded-[2.5rem] shadow-2xl transition-all active:scale-[0.98] mt-4 text-xl ${formData.type === 'owner' ? 'bg-emerald-600 shadow-emerald-100' : 'bg-blue-600 shadow-blue-100'} disabled:bg-slate-300`}>
-                                                {isSaving ? "雲端同步中..." : "確認儲存並同步"}
+                                            <button 
+                                                onClick={handleSavePayment} 
+                                                disabled={isSaving} 
+                                                className={`w-full py-6 text-white font-black rounded-[2.5rem] shadow-2xl transition-all active:scale-[0.98] mt-4 text-xl ${formData.type === 'owner' ? 'bg-emerald-600 shadow-emerald-100' : 'bg-blue-600 shadow-blue-100'} disabled:bg-slate-300 flex justify-center items-center gap-3`}
+                                            >
+                                                {isSaving ? <><Icon name="loader-2" className="animate-spin" /> 正在雲端存檔...</> : "確認儲存並同步"}
                                             </button>
                                         </>
                                     )}
