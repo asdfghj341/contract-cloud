@@ -13,34 +13,66 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        window.Firebase = { initializeApp, getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken, getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query };
+    </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap');
         body { font-family: 'Noto Sans TC', sans-serif; }
-        .animate-in { animation: fadeIn 0.5s ease-out; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-in { animation: fadeIn 0.4s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        .sync-indicator { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-900">
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useMemo, useEffect } = React;
-        
-        // 模擬 Lucide 圖示組件
+        const { useState, useMemo, useEffect, useRef } = React;
+        const { initializeApp, getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken, getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query } = window.Firebase;
+
+        // --- Firebase 初始化 ---
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+        // 修復後的 Icon 組件：使用 useRef 避免 Lucide 直接修改 DOM 導致 React 錯誤
         const Icon = ({ name, size = 20, className = "" }) => {
+            const iconRef = useRef(null);
+            
             useEffect(() => {
-                if (window.lucide) {
-                    window.lucide.createIcons();
+                if (window.lucide && iconRef.current) {
+                    // 清空容器並插入新的 i 標籤供 Lucide 替換
+                    iconRef.current.innerHTML = `<i data-lucide="${name}" style="width: ${size}px; height: ${size}px;"></i>`;
+                    window.lucide.createIcons({
+                        root: iconRef.current
+                    });
                 }
-            }, [name]);
-            return <i data-lucide={name} style={{ width: size, height: size }} className={className}></i>;
+            }, [name, size]);
+
+            return (
+                <span 
+                    ref={iconRef} 
+                    className={`inline-flex items-center justify-center ${className}`} 
+                    style={{ width: size, height: size, minWidth: size, minHeight: size }}
+                ></span>
+            );
         };
 
         const App = () => {
-            // --- 狀態管理 (初始值改為空陣列) ---
+            const [user, setUser] = useState(null);
             const [contracts, setContracts] = useState([]);
             const [ownerPayments, setOwnerPayments] = useState([]);
             const [vendorPayments, setVendorPayments] = useState([]);
+            const [isLoading, setIsLoading] = useState(true);
 
             const [filterCompany, setFilterCompany] = useState('All');
             const [filterYear, setFilterYear] = useState(new Date().getFullYear().toString());
@@ -52,14 +84,62 @@
                 type: 'owner', amount: '', invoiceNo: '', invoiceDate: '', vendor: ''
             });
 
+            // 1. 驗證登入
+            useEffect(() => {
+                const initAuth = async () => {
+                    try {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (error) {
+                        console.error("Auth Error:", error);
+                    }
+                };
+                initAuth();
+                const unsubscribe = onAuthStateChanged(auth, (u) => {
+                    setUser(u);
+                });
+                return () => unsubscribe();
+            }, []);
+
+            // 2. 監聽雲端資料 (Firestore)
+            useEffect(() => {
+                if (!user) return;
+
+                const contractsCol = collection(db, 'artifacts', appId, 'users', user.uid, 'contracts');
+                const ownerPaymentsCol = collection(db, 'artifacts', appId, 'users', user.uid, 'ownerPayments');
+                const vendorPaymentsCol = collection(db, 'artifacts', appId, 'users', user.uid, 'vendorPayments');
+
+                const unsubContracts = onSnapshot(query(contractsCol), (snapshot) => {
+                    setContracts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+                    setIsLoading(false);
+                }, (err) => console.error(err));
+
+                const unsubOwnerPay = onSnapshot(query(ownerPaymentsCol), (snapshot) => {
+                    setOwnerPayments(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+                }, (err) => console.error(err));
+
+                const unsubVendorPay = onSnapshot(query(vendorPaymentsCol), (snapshot) => {
+                    setVendorPayments(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+                }, (err) => console.error(err));
+
+                return () => {
+                    unsubContracts();
+                    unsubOwnerPay();
+                    unsubVendorPay();
+                };
+            }, [user]);
+
             // --- 計算邏輯 ---
             const stats = useMemo(() => {
                 return contracts.map(contract => {
-                    const ownerPaid = ownerPayments
+                    const oPay = ownerPayments
                         .filter(p => p.contractId === contract.id && p.status === '已收')
                         .reduce((sum, p) => sum + p.amount, 0);
                     
-                    const vendorPaid = vendorPayments
+                    const vPay = vendorPayments
                         .filter(v => v.contractId === contract.id && v.status === '已付')
                         .reduce((sum, v) => sum + v.amount, 0);
 
@@ -70,10 +150,10 @@
 
                     return {
                         ...contract,
-                        ownerPaid, vendorPaid, retentionAmount,
+                        ownerPaid: oPay, vendorPaid: vPay, retentionAmount,
                         alerts: {
-                            vendorLagging: ownerPaid > vendorPaid && vendorPaid > 0,
-                            ownerLagging: vendorPaid > ownerPaid,
+                            vendorLagging: oPay > vPay && vPay > 0,
+                            ownerLagging: vPay > oPay,
                             retentionExpiring: isRetentionExpiring
                         }
                     };
@@ -94,26 +174,27 @@
                 });
             }, [stats, filterYear, filterCompany]);
 
-            const handleSaveContract = () => {
+            // --- Firestore 操作 ---
+            const handleSaveContract = async () => {
+                if (!user) return;
                 const newContract = {
-                    id: Date.now().toString(),
                     name: formData.name || '未命名合約',
                     owner: formData.owner || '未知業主',
                     totalAmount: Number(formData.totalAmount) || 0,
                     retentionRate: Number(formData.retentionRate) || 10,
                     retentionExpiry: formData.retentionExpiry || '',
-                    year: new Date().getFullYear().toString(),
+                    year: filterYear,
                     startDate: new Date().toISOString().split('T')[0]
                 };
-                setContracts([...contracts, newContract]);
+                await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'contracts'), newContract);
                 setShowModal(null);
                 setFormData({ ...formData, name: '', owner: '', totalAmount: '', retentionExpiry: '' });
             };
 
-            const handleSavePayment = () => {
+            const handleSavePayment = async () => {
+                if (!user) return;
                 const isOwner = formData.type === 'owner';
                 const newPayment = {
-                    id: Date.now().toString(),
                     contractId: showModal.contractId,
                     amount: Number(formData.amount) || 0,
                     date: formData.invoiceDate || new Date().toISOString().split('T')[0],
@@ -122,14 +203,19 @@
                     status: isOwner ? '已收' : '已付',
                     vendor: isOwner ? undefined : (formData.vendor || '未知廠商')
                 };
-                if (isOwner) setOwnerPayments([...ownerPayments, newPayment]);
-                else setVendorPayments([...vendorPayments, newPayment]);
+                const colName = isOwner ? 'ownerPayments' : 'vendorPayments';
+                await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, colName), newPayment);
                 setShowModal(null);
                 setFormData({ ...formData, amount: '', invoiceNo: '', invoiceDate: '', vendor: '' });
             };
 
+            const handleDeleteContract = async (id) => {
+                if (!user || !confirm('確定要刪除此合約嗎？雲端資料刪除後無法復原。')) return;
+                await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'contracts', id));
+            };
+
             const SummaryCard = ({ title, value, iconName, color }) => (
-                <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-4">
+                <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-4 transition-transform hover:scale-[1.02]">
                     <div className={`p-3 rounded-xl ${color} text-white flex items-center justify-center`}>
                         <Icon name={iconName} size={24} />
                     </div>
@@ -140,17 +226,31 @@
                 </div>
             );
 
+            if (isLoading && !user) return (
+                <div className="min-h-screen flex items-center justify-center bg-slate-50">
+                    <div className="text-center">
+                        <div className="sync-indicator mb-4 text-blue-600 flex justify-center tracking-widest"><Icon name="cloud" size={48} /></div>
+                        <p className="text-slate-500 font-medium tracking-widest">雲端同步中...</p>
+                    </div>
+                </div>
+            );
+
             return (
-                <div className="min-h-screen p-4 md:p-8">
+                <div className="min-h-screen p-4 md:p-8 animate-in">
                     {/* Header */}
                     <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
                         <div>
-                            <h1 className="text-3xl font-extrabold tracking-tight text-slate-800">工程合約記帳系統</h1>
-                            <p className="text-slate-500 mt-1">追蹤合約進度、發票管理與保留款提醒</p>
+                            <div className="flex items-center gap-2 mb-1">
+                                <h1 className="text-3xl font-extrabold tracking-tight text-slate-800">工程合約記帳系統</h1>
+                                <div className="flex items-center gap-1 px-2 py-0.5 bg-emerald-50 text-emerald-600 text-[10px] font-bold rounded-full border border-emerald-100">
+                                    <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full sync-indicator"></div> 雲端已連線
+                                </div>
+                            </div>
+                            <p className="text-slate-500">追蹤合約進度、發票管理與保留款提醒</p>
                         </div>
                         <button 
                             onClick={() => setShowModal({ type: 'contract' })}
-                            className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl flex items-center gap-2 transition-all shadow-lg shadow-blue-200"
+                            className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl flex items-center gap-2 transition-all shadow-lg shadow-blue-200 active:scale-95"
                         >
                             <Icon name="plus" size={20} /> 新增合約
                         </button>
@@ -160,17 +260,17 @@
                     <div className="max-w-7xl mx-auto mb-6">
                         <div className="flex flex-wrap items-center justify-between gap-4 bg-white p-3 rounded-2xl shadow-sm border border-gray-100">
                             <div className="flex p-1 bg-gray-50 rounded-xl">
-                                <button onClick={() => setActiveTab('dashboard')} className={`px-4 py-2 rounded-lg text-sm font-medium ${activeTab === 'dashboard' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}>儀表板</button>
-                                <button onClick={() => setActiveTab('contracts')} className={`px-4 py-2 rounded-lg text-sm font-medium ${activeTab === 'contracts' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}>合約清單</button>
+                                <button onClick={() => setActiveTab('dashboard')} className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'dashboard' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}>儀表板</button>
+                                <button onClick={() => setActiveTab('contracts')} className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'contracts' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}>合約清單</button>
                             </div>
                             <div className="flex gap-4">
-                                <select value={filterYear} onChange={(e) => setFilterYear(e.target.value)} className="bg-gray-50 border-none text-sm rounded-lg p-2 outline-none">
+                                <select value={filterYear} onChange={(e) => setFilterYear(e.target.value)} className="bg-gray-50 border-none text-sm rounded-lg p-2 outline-none cursor-pointer">
                                     <option value="2024">2024 年度</option>
                                     <option value="2025">2025 年度</option>
                                     <option value="2026">2026 年度</option>
                                 </select>
-                                <select value={filterCompany} onChange={(e) => setFilterCompany(e.target.value)} className="bg-gray-50 border-none text-sm rounded-lg p-2 outline-none">
-                                    {companies.map(c => <option key={c} value={c}>{c === 'All' ? '所有公司' : c}</option>)}
+                                <select value={filterCompany} onChange={(e) => setFilterCompany(e.target.value)} className="bg-gray-50 border-none text-sm rounded-lg p-2 outline-none cursor-pointer">
+                                    {companies.map(c => <option key={c} value={c}>{c === 'All' ? '所有業主' : c}</option>)}
                                 </select>
                             </div>
                         </div>
@@ -178,7 +278,7 @@
 
                     <div className="max-w-7xl mx-auto space-y-8">
                         {activeTab === 'dashboard' && (
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 animate-in">
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                                 <SummaryCard title="年度合約總額" value={filteredStats.reduce((sum, s) => sum + s.totalAmount, 0)} iconName="dollar-sign" color="bg-indigo-500" />
                                 <SummaryCard title="已收業主款項" value={filteredStats.reduce((sum, s) => sum + s.ownerPaid, 0)} iconName="check-circle" color="bg-emerald-500" />
                                 <SummaryCard title="待結保留款" value={filteredStats.reduce((sum, s) => sum + s.retentionAmount, 0)} iconName="clock" color="bg-amber-500" />
@@ -193,16 +293,16 @@
                                     filteredStats.map(s => (
                                         <React.Fragment key={s.id}>
                                             {s.alerts.vendorLagging && (
-                                                <div className="bg-amber-50 border-l-4 border-amber-400 p-4 rounded-r-xl flex items-start gap-3">
+                                                <div className="bg-amber-50 border-l-4 border-amber-400 p-4 rounded-r-xl flex items-start gap-3 animate-in">
                                                     <Icon name="arrow-right-left" className="text-amber-600 mt-1" />
                                                     <div>
                                                         <p className="font-bold text-amber-900">{s.name}</p>
-                                                        <p className="text-sm text-amber-700">業主已付但廠商進度落後！</p>
+                                                        <p className="text-sm text-amber-700">業主已付款，但廠商撥款進度較慢，請確認。</p>
                                                     </div>
                                                 </div>
                                             )}
                                             {s.alerts.retentionExpiring && (
-                                                <div className="bg-blue-50 border-l-4 border-blue-400 p-4 rounded-r-xl flex items-start gap-3">
+                                                <div className="bg-blue-50 border-l-4 border-blue-400 p-4 rounded-r-xl flex items-start gap-3 animate-in">
                                                     <Icon name="clock" className="text-blue-600 mt-1" />
                                                     <div>
                                                         <p className="font-bold text-blue-900">{s.name}</p>
@@ -213,7 +313,9 @@
                                         </React.Fragment>
                                     ))
                                 ) : (
-                                    <p className="text-gray-400 text-sm italic col-span-2">目前無異常警示事項。</p>
+                                    <div className="col-span-2 py-6 bg-white border border-dashed border-slate-200 rounded-2xl flex items-center justify-center text-slate-400 text-sm italic">
+                                        <Icon name="check" size={16} className="mr-2" /> 目前無異常提醒事項。
+                                    </div>
                                 )}
                             </div>
                         </div>
@@ -222,10 +324,10 @@
                         <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
                             <div className="overflow-x-auto">
                                 <table className="w-full text-left">
-                                    <thead className="bg-gray-50 text-gray-500 text-xs font-bold uppercase">
+                                    <thead className="bg-gray-50/50 text-gray-500 text-xs font-bold uppercase">
                                         <tr>
-                                            <th className="px-6 py-4">合約名稱</th>
-                                            <th className="px-6 py-4">總額</th>
+                                            <th className="px-6 py-4">合約名稱 / 業主</th>
+                                            <th className="px-6 py-4">合約總額</th>
                                             <th className="px-6 py-4 text-emerald-600">業主已付</th>
                                             <th className="px-6 py-4 text-blue-600">廠商已付</th>
                                             <th className="px-6 py-4">保留款 (到期)</th>
@@ -234,21 +336,43 @@
                                     </thead>
                                     <tbody className="divide-y divide-gray-50">
                                         {filteredStats.map(item => (
-                                            <tr key={item.id} className="hover:bg-slate-50 transition-colors group text-sm">
-                                                <td className="px-6 py-5 font-bold">{item.name}<div className="text-xs text-gray-400">{item.owner}</div></td>
-                                                <td className="px-6 py-5">${item.totalAmount.toLocaleString()}</td>
-                                                <td className="px-6 py-5 font-bold text-emerald-600">${item.ownerPaid.toLocaleString()}</td>
-                                                <td className="px-6 py-5 font-bold text-blue-600">${item.vendorPaid.toLocaleString()}</td>
-                                                <td className="px-6 py-5 font-bold text-amber-600">${item.retentionAmount.toLocaleString()}<div className="text-[10px] text-gray-400">{item.retentionExpiry || '未設定'}</div></td>
+                                            <tr key={item.id} className="hover:bg-slate-50/50 transition-colors group text-sm">
+                                                <td className="px-6 py-5">
+                                                    <div className="font-bold text-slate-800">{item.name}</div>
+                                                    <div className="text-xs text-slate-400 mt-0.5">{item.owner}</div>
+                                                </td>
+                                                <td className="px-6 py-5 font-medium text-slate-600">${item.totalAmount.toLocaleString()}</td>
+                                                <td className="px-6 py-5 font-bold text-emerald-600">
+                                                    ${item.ownerPaid.toLocaleString()}
+                                                    <div className="w-16 bg-gray-100 h-0.5 mt-1 rounded-full"><div className="bg-emerald-400 h-full rounded-full" style={{ width: `${Math.min((item.ownerPaid/item.totalAmount)*100, 100)}%` }}></div></div>
+                                                </td>
+                                                <td className="px-6 py-5 font-bold text-blue-600">
+                                                    ${item.vendorPaid.toLocaleString()}
+                                                    <div className="w-16 bg-gray-100 h-0.5 mt-1 rounded-full"><div className="bg-blue-400 h-full rounded-full" style={{ width: `${Math.min((item.vendorPaid/item.totalAmount)*100, 100)}%` }}></div></div>
+                                                </td>
+                                                <td className="px-6 py-5">
+                                                    <div className={`font-bold ${item.alerts.retentionExpiring ? "text-rose-500" : "text-amber-600"}`}>
+                                                        ${item.retentionAmount.toLocaleString()} ({item.retentionRate}%)
+                                                    </div>
+                                                    <div className="text-[10px] text-gray-400">{item.retentionExpiry || '未設定'}</div>
+                                                </td>
                                                 <td className="px-6 py-5 text-right flex justify-end gap-2">
-                                                    <button onClick={() => setShowModal({ type: 'payment', contractId: item.id })} className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg" title="記帳"><Icon name="plus" size={18} /></button>
-                                                    <button onClick={() => setContracts(contracts.filter(c => c.id !== item.id))} className="p-2 text-rose-600 hover:bg-rose-50 rounded-lg"><Icon name="trash-2" size={18} /></button>
+                                                    <button onClick={() => {
+                                                        setFormData({ ...formData, type: 'owner' });
+                                                        setShowModal({ type: 'payment', contractId: item.id });
+                                                    }} className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="雲端記帳"><Icon name="plus" size={18} /></button>
+                                                    <button onClick={() => handleDeleteContract(item.id)} className="p-2 text-rose-600 hover:bg-rose-50 rounded-lg transition-colors opacity-0 group-hover:opacity-100"><Icon name="trash-2" size={18} /></button>
                                                 </td>
                                             </tr>
                                         ))}
                                         {filteredStats.length === 0 && (
                                             <tr>
-                                                <td colSpan="6" className="px-6 py-12 text-center text-gray-400">目前尚無合約紀錄，請點擊上方「新增合約」開始。</td>
+                                                <td colSpan="6" className="px-6 py-16 text-center">
+                                                    <div className="flex flex-col items-center gap-2 text-slate-300">
+                                                        <div className="flex justify-center"><Icon name="inbox" size={48} className="opacity-20" /></div>
+                                                        <p className="text-sm font-medium">尚無合約資料，點擊上方按鈕開始雲端記帳。</p>
+                                                    </div>
+                                                </td>
                                             </tr>
                                         )}
                                     </tbody>
@@ -259,40 +383,67 @@
 
                     {/* Modal */}
                     {showModal && (
-                        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
                             <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-in">
-                                <div className="p-6 border-b flex justify-between items-center bg-slate-50">
-                                    <h3 className="font-bold text-lg">{showModal.type === 'contract' ? '新增合約' : '款項記帳'}</h3>
-                                    <button onClick={() => setShowModal(null)} className="text-gray-400">✕</button>
+                                <div className="p-6 border-b flex justify-between items-center bg-slate-50/50">
+                                    <h3 className="font-bold text-lg text-slate-800">{showModal.type === 'contract' ? '建立雲端合約' : '發票與款項登記'}</h3>
+                                    <button onClick={() => setShowModal(null)} className="p-2 hover:bg-slate-200 rounded-full transition-colors text-slate-400">✕</button>
                                 </div>
                                 <div className="p-6 space-y-4">
                                     {showModal.type === 'contract' ? (
                                         <>
-                                            <input type="text" placeholder="合約名稱" className="w-full p-3 bg-gray-50 border rounded-xl" onChange={e => setFormData({...formData, name: e.target.value})} />
-                                            <input type="text" placeholder="業主名稱" className="w-full p-3 bg-gray-50 border rounded-xl" onChange={e => setFormData({...formData, owner: e.target.value})} />
-                                            <input type="number" placeholder="總金額" className="w-full p-3 bg-gray-50 border rounded-xl" onChange={e => setFormData({...formData, totalAmount: e.target.value})} />
+                                            <div className="space-y-1">
+                                                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider ml-1">合約名稱</label>
+                                                <input type="text" placeholder="例如：新建工程 A 棟" className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" onChange={e => setFormData({...formData, name: e.target.value})} />
+                                            </div>
+                                            <div className="space-y-1">
+                                                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider ml-1">業主名稱</label>
+                                                <input type="text" placeholder="公司名稱" className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" onChange={e => setFormData({...formData, owner: e.target.value})} />
+                                            </div>
+                                            <div className="space-y-1">
+                                                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider ml-1">合約金額</label>
+                                                <input type="number" placeholder="NT$" className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" onChange={e => setFormData({...formData, totalAmount: e.target.value})} />
+                                            </div>
                                             <div className="grid grid-cols-2 gap-4">
-                                                <div className="flex flex-col gap-1">
-                                                    <label className="text-[10px] text-gray-400 ml-1">保留款 %</label>
-                                                    <input type="number" defaultValue="10" className="p-3 bg-gray-50 border rounded-xl" onChange={e => setFormData({...formData, retentionRate: e.target.value})} />
+                                                <div className="space-y-1">
+                                                    <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider ml-1">保留款 %</label>
+                                                    <input type="number" defaultValue="10" className="p-3 bg-slate-50 border border-slate-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" onChange={e => setFormData({...formData, retentionRate: e.target.value})} />
                                                 </div>
-                                                <div className="flex flex-col gap-1">
-                                                    <label className="text-[10px] text-gray-400 ml-1">保留款到期日</label>
-                                                    <input type="date" className="p-3 bg-gray-50 border rounded-xl" onChange={e => setFormData({...formData, retentionExpiry: e.target.value})} />
+                                                <div className="space-y-1">
+                                                    <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider ml-1">保留款到期</label>
+                                                    <input type="date" className="p-3 bg-slate-50 border border-slate-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" onChange={e => setFormData({...formData, retentionExpiry: e.target.value})} />
                                                 </div>
                                             </div>
-                                            <button onClick={handleSaveContract} className="w-full py-4 bg-blue-600 text-white font-bold rounded-xl shadow-lg">建立合約</button>
+                                            <button onClick={handleSaveContract} className="w-full py-4 bg-blue-600 text-white font-bold rounded-2xl shadow-lg shadow-blue-200 hover:bg-blue-700 transition-colors mt-2 active:scale-95">
+                                                確認建立
+                                            </button>
                                         </>
                                     ) : (
                                         <>
-                                            <select className="w-full p-3 bg-gray-50 border rounded-xl" onChange={e => setFormData({...formData, type: e.target.value === '業主' ? 'owner' : 'vendor'})}>
-                                                <option value="業主">業主付款 (收入)</option>
-                                                <option value="廠商">廠商付款 (支出)</option>
-                                            </select>
-                                            <input type="number" placeholder="金額" className="w-full p-3 bg-gray-50 border rounded-xl" onChange={e => setFormData({...formData, amount: e.target.value})} />
-                                            <input type="text" placeholder="發票號碼" className="w-full p-3 bg-gray-50 border rounded-xl" onChange={e => setFormData({...formData, invoiceNo: e.target.value})} />
-                                            <input type="date" className="w-full p-3 bg-gray-50 border rounded-xl" onChange={e => setFormData({...formData, invoiceDate: e.target.value})} />
-                                            <button onClick={handleSavePayment} className="w-full py-4 bg-emerald-600 text-white font-bold rounded-xl shadow-lg">儲存紀錄</button>
+                                            <div className="space-y-1">
+                                                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider ml-1">款項類別</label>
+                                                <div className="flex p-1 bg-slate-100 rounded-xl">
+                                                    <button onClick={() => setFormData({...formData, type: 'owner'})} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${formData.type === 'owner' ? 'bg-white shadow-sm text-emerald-600' : 'text-slate-400'}`}>業主收款</button>
+                                                    <button onClick={() => setFormData({...formData, type: 'vendor'})} className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${formData.type === 'vendor' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-400'}`}>廠商付款</button>
+                                                </div>
+                                            </div>
+                                            <div className="space-y-1">
+                                                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider ml-1">金額</label>
+                                                <input type="number" placeholder="輸入款項金額" className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" onChange={e => setFormData({...formData, amount: e.target.value})} />
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-4">
+                                                <div className="space-y-1">
+                                                    <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider ml-1">發票號碼</label>
+                                                    <input type="text" placeholder="AB-..." className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none uppercase" onChange={e => setFormData({...formData, invoiceNo: e.target.value})} />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider ml-1">發票日期</label>
+                                                    <input type="date" className="w-full p-3 bg-slate-50 border border-slate-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" onChange={e => setFormData({...formData, invoiceDate: e.target.value})} />
+                                                </div>
+                                            </div>
+                                            <button onClick={handleSavePayment} className="w-full py-4 bg-emerald-600 text-white font-bold rounded-2xl shadow-lg shadow-emerald-200 hover:bg-emerald-700 transition-colors mt-2 active:scale-95">
+                                                儲存至雲端
+                                            </button>
                                         </>
                                     )}
                                 </div>
