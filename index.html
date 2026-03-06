@@ -81,6 +81,7 @@
             const [user, setUser] = useState(null);
             const [contracts, setContracts] = useState([]);
             const [ownerPayments, setOwnerPayments] = useState([]);
+            const [vendorPayments, setVendorPayments] = useState([]);
             const [isLoading, setIsLoading] = useState(true);
             const [authChecked, setAuthChecked] = useState(false);
             const [isSaving, setIsSaving] = useState(false);
@@ -93,7 +94,7 @@
 
             const [formData, setFormData] = useState({
                 name: '', owner: '', totalAmount: '', retentionRate: 10, retentionExpiry: '',
-                amount: '', invoiceNo: '', invoiceDate: '', hasRetention: false
+                amount: '', invoiceNo: '', invoiceDate: '', hasRetention: false, type: 'owner', vendor: ''
             });
 
             const showToast = (msg, type = "success") => {
@@ -127,20 +128,25 @@
             useEffect(() => {
                 if (!user || !db) return;
                 const cCol = collection(db, 'artifacts', appId, 'users', user.uid, 'contracts');
-                const pCol = collection(db, 'artifacts', appId, 'users', user.uid, 'ownerPayments');
+                const oCol = collection(db, 'artifacts', appId, 'users', user.uid, 'ownerPayments');
+                const vCol = collection(db, 'artifacts', appId, 'users', user.uid, 'vendorPayments');
 
-                const unsub1 = onSnapshot(query(cCol), (snap) => {
+                const unsubContracts = onSnapshot(query(cCol), (snap) => {
                     setContracts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
                     setIsLoading(false);
                 }, (err) => {
                     setError("資料庫存取被拒。請確認 Firebase Console 中的 Rules 是否已設定。");
                 });
 
-                const unsub2 = onSnapshot(query(pCol), (snap) => {
+                const unsubOwnerPay = onSnapshot(query(oCol), (snap) => {
                     setOwnerPayments(snap.docs.map(d => ({ id: d.id, ...d.data() })));
                 });
 
-                return () => { unsub1(); unsub2(); };
+                const unsubVendorPay = onSnapshot(query(vCol), (snap) => {
+                    setVendorPayments(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+                });
+
+                return () => { unsubContracts(); unsubOwnerPay(); unsubVendorPay(); };
             }, [user]);
 
             const handleGoogleLogin = async () => {
@@ -161,12 +167,13 @@
 
             const stats = useMemo(() => {
                 return contracts.map(c => {
-                    const paid = ownerPayments.filter(p => p.contractId === c.id).reduce((s, p) => s + Number(p.amount), 0);
+                    const ownerPaid = ownerPayments.filter(p => p.contractId === c.id).reduce((s, p) => s + Number(p.amount), 0);
+                    const vendorPaid = vendorPayments.filter(p => p.contractId === c.id).reduce((s, p) => s + Number(p.amount), 0);
                     const ret = (Number(c.totalAmount) * (c.hasRetention ? Number(c.retentionRate) : 0)) / 100;
                     const isExp = c.hasRetention && c.retentionExpiry && new Date(c.retentionExpiry) <= new Date(Date.now() + 30*24*60*60*1000);
-                    return { ...c, ownerPaid: paid, retentionAmount: ret, isExpiring: isExp };
+                    return { ...c, ownerPaid, vendorPaid, retentionAmount: ret, isExpiring: isExp };
                 });
-            }, [contracts, ownerPayments]);
+            }, [contracts, ownerPayments, vendorPayments]);
 
             const filteredStats = stats.filter(s => (s.year === filterYear) && (filterCompany === 'All' || s.owner === filterCompany));
 
@@ -186,7 +193,7 @@
                     });
                     showToast("合約已成功同步至雲端");
                     setShowModal(null);
-                    setFormData({ name: '', owner: '', totalAmount: '', retentionRate: 10, retentionExpiry: '', hasRetention: false });
+                    setFormData({ name: '', owner: '', totalAmount: '', retentionRate: 10, retentionExpiry: '', hasRetention: false, type: 'owner', vendor: '' });
                 } catch (err) {
                     setError("存檔失敗: " + err.message);
                 } finally {
@@ -198,15 +205,19 @@
                 if (!user || !db) return;
                 setIsSaving(true);
                 try {
-                    await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'ownerPayments'), {
+                    const isOwner = formData.type === 'owner';
+                    const colName = isOwner ? 'ownerPayments' : 'vendorPayments';
+                    await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, colName), {
                         contractId: showModal.contractId,
                         amount: Number(formData.amount) || 0,
                         invoiceNo: formData.invoiceNo || '',
                         invoiceDate: formData.invoiceDate || '',
+                        vendor: isOwner ? undefined : formData.vendor,
                         createdAt: Date.now()
                     });
-                    showToast("收款紀錄已儲存");
+                    showToast(isOwner ? "業主收款紀錄已儲存" : "廠商付款紀錄已儲存");
                     setShowModal(null);
+                    setFormData({ ...formData, amount: '', invoiceNo: '', invoiceDate: '', vendor: '' });
                 } catch (err) {
                     setError("記帳失敗: " + err.message);
                 } finally {
@@ -257,7 +268,7 @@
                             </div>
                         </div>
                         <div className="flex gap-3">
-                            <button onClick={() => setShowModal({ type: 'contract' })} className="bg-blue-600 text-white px-6 py-3.5 rounded-2xl flex items-center gap-2 shadow-xl shadow-blue-100 font-black transition-all hover:bg-blue-700 active:scale-95"><Icon name="plus" size={20} /> 新增合約</button>
+                            <button onClick={() => { setFormData({...formData, hasRetention: false, type: 'owner'}); setShowModal({ type: 'contract' }); }} className="bg-blue-600 text-white px-6 py-3.5 rounded-2xl flex items-center gap-2 shadow-xl shadow-blue-100 font-black transition-all hover:bg-blue-700 active:scale-95"><Icon name="plus" size={20} /> 新增合約</button>
                             <button onClick={() => signOut(auth).then(() => window.location.reload())} className="bg-white text-slate-400 border px-6 py-3.5 rounded-2xl font-black active:scale-95 transition-all">登出</button>
                         </div>
                     </header>
@@ -276,15 +287,15 @@
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 font-black">
                             <div className="bg-white p-8 rounded-[2.5rem] shadow-sm flex items-center gap-5">
                                 <div className="p-4 bg-indigo-500 text-white rounded-2xl"><Icon name="dollar-sign" size={28} /></div>
-                                <div><p className="text-[10px] text-slate-300 uppercase tracking-widest">總額</p><p className="text-2xl">${filteredStats.reduce((a, b) => a + b.totalAmount, 0).toLocaleString()}</p></div>
+                                <div><p className="text-[10px] text-slate-300 uppercase tracking-widest">年度合約總額</p><p className="text-2xl">${filteredStats.reduce((a, b) => a + b.totalAmount, 0).toLocaleString()}</p></div>
                             </div>
                             <div className="bg-white p-8 rounded-[2.5rem] shadow-sm flex items-center gap-5">
                                 <div className="p-4 bg-emerald-500 text-white rounded-2xl"><Icon name="check-circle" size={28} /></div>
-                                <div><p className="text-[10px] text-slate-300 uppercase tracking-widest">已收</p><p className="text-2xl text-emerald-600">${filteredStats.reduce((a, b) => a + b.ownerPaid, 0).toLocaleString()}</p></div>
+                                <div><p className="text-[10px] text-slate-300 uppercase tracking-widest">業主累計付款</p><p className="text-2xl text-emerald-600">${filteredStats.reduce((a, b) => a + b.ownerPaid, 0).toLocaleString()}</p></div>
                             </div>
                             <div className="bg-white p-8 rounded-[2.5rem] shadow-sm flex items-center gap-5">
                                 <div className="p-4 bg-amber-500 text-white rounded-2xl"><Icon name="clock" size={28} /></div>
-                                <div><p className="text-[10px] text-slate-300 uppercase tracking-widest">保留</p><p className="text-2xl text-amber-500">${filteredStats.reduce((a, b) => a + b.retentionAmount, 0).toLocaleString()}</p></div>
+                                <div><p className="text-[10px] text-slate-300 uppercase tracking-widest">預計可領保留款</p><p className="text-2xl text-amber-500">${filteredStats.reduce((a, b) => a + b.retentionAmount, 0).toLocaleString()}</p></div>
                             </div>
                         </div>
 
@@ -293,9 +304,10 @@
                                 <table className="w-full text-left">
                                     <thead className="bg-slate-50/50 text-[10px] font-black uppercase text-slate-400 border-b tracking-widest">
                                         <tr>
-                                            <th className="px-8 py-6">工程名稱</th>
+                                            <th className="px-8 py-6">工程案名</th>
                                             <th className="px-8 py-6">總額</th>
-                                            <th className="px-8 py-6 text-emerald-600">已收款</th>
+                                            <th className="px-8 py-6 text-emerald-600">業主已付</th>
+                                            <th className="px-8 py-6 text-blue-600">廠商已付</th>
                                             <th className="px-8 py-6 text-amber-600">保留款</th>
                                             <th className="px-8 py-6 text-right">操作</th>
                                         </tr>
@@ -306,6 +318,7 @@
                                                 <td className="px-8 py-8 font-black text-slate-700 text-lg">{item.name}<div className="text-[10px] text-slate-300 font-bold uppercase mt-1">{item.owner}</div></td>
                                                 <td className="px-8 py-8 font-mono font-bold text-slate-400">${item.totalAmount.toLocaleString()}</td>
                                                 <td className="px-8 py-8 font-mono font-black text-emerald-600 text-lg">${item.ownerPaid.toLocaleString()}</td>
+                                                <td className="px-8 py-8 font-mono font-black text-blue-600 text-lg">${item.vendorPaid.toLocaleString()}</td>
                                                 <td className="px-8 py-8 font-mono font-black text-amber-500 text-lg">
                                                     {item.hasRetention ? (
                                                         <>
@@ -317,8 +330,8 @@
                                                     )}
                                                 </td>
                                                 <td className="px-8 py-8 text-right flex justify-end gap-2">
-                                                    <button onClick={() => { setFormData({amount:'', invoiceNo:'', invoiceDate:''}); setShowModal({type:'payment', contractId:item.id}); }} className="p-4 bg-blue-50 text-blue-600 rounded-2xl active:scale-90 transition-all"><Icon name="plus" size={24} /></button>
-                                                    <button onClick={() => { if(confirm('確定刪除？')) deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'contracts', item.id)); }} className="p-4 text-slate-200 hover:text-rose-500 transition-all opacity-0 group-hover:opacity-100"><Icon name="trash-2" size={24} /></button>
+                                                    <button onClick={() => { setFormData({...formData, amount:'', invoiceNo:'', invoiceDate:'', type: 'owner', vendor: ''}); setShowModal({type:'payment', contractId:item.id}); }} className="p-4 bg-blue-50 text-blue-600 rounded-2xl active:scale-90 transition-all"><Icon name="plus" size={24} /></button>
+                                                    <button onClick={() => { if(confirm('確定要刪除嗎？雲端資料將無法復原。')) deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'contracts', item.id)); }} className="p-4 text-slate-200 hover:text-rose-500 transition-all opacity-0 group-hover:opacity-100"><Icon name="trash-2" size={24} /></button>
                                                 </td>
                                             </tr>
                                         ))}
@@ -331,22 +344,22 @@
                     {showModal && (
                         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-50 flex items-center justify-center p-4 overflow-y-auto">
                             <div className="bg-white rounded-[3rem] shadow-2xl w-full max-w-md border-8 border-white my-auto animate-in overflow-hidden">
-                                <div className="p-8 border-b flex justify-between items-center bg-slate-50/50 font-black">
-                                    <h3 className="text-xl text-slate-800">{showModal.type === 'contract' ? '新建雲端合約' : '記錄已收款項'}</h3>
+                                <div className="p-8 border-b flex justify-between items-center bg-slate-50/50 font-black text-slate-800">
+                                    <h3 className="text-xl">{showModal.type === 'contract' ? '新建雲端合約' : '款項紀錄'}</h3>
                                     <button onClick={() => setShowModal(null)} className="text-slate-300 hover:text-slate-600"><Icon name="x" size={24} /></button>
                                 </div>
                                 <div className="p-10 space-y-6">
                                     {showModal.type === 'contract' ? (
                                         <>
-                                            <input type="text" placeholder="工程案名" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-black outline-none focus:border-blue-600" onChange={e => setFormData({...formData, name: e.target.value})} />
-                                            <input type="text" placeholder="業主公司" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-black outline-none focus:border-blue-600" onChange={e => setFormData({...formData, owner: e.target.value})} />
-                                            <input type="number" placeholder="合約金額" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-black outline-none focus:border-blue-600" onChange={e => setFormData({...formData, totalAmount: e.target.value})} />
+                                            <input type="text" placeholder="工程案名" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-black outline-none focus:border-blue-600" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+                                            <input type="text" placeholder="業主公司" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-black outline-none focus:border-blue-600" value={formData.owner} onChange={e => setFormData({...formData, owner: e.target.value})} />
+                                            <input type="number" placeholder="合約總金額" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-black outline-none focus:border-blue-600 font-mono" value={formData.totalAmount} onChange={e => setFormData({...formData, totalAmount: e.target.value})} />
                                             
                                             <div className="flex items-center gap-3 p-4 bg-slate-50 rounded-2xl border-2 border-slate-100">
                                                 <input 
                                                     type="checkbox" 
                                                     id="retention-check"
-                                                    className="w-5 h-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500" 
+                                                    className="w-6 h-6 rounded-lg border-slate-300 text-blue-600 focus:ring-blue-500" 
                                                     checked={formData.hasRetention}
                                                     onChange={e => setFormData({...formData, hasRetention: e.target.checked})}
                                                 />
@@ -357,27 +370,53 @@
                                                 <div className="grid grid-cols-2 gap-4 animate-in">
                                                     <div className="space-y-1">
                                                         <label className="text-[10px] font-black text-slate-400 ml-1">保留 %</label>
-                                                        <input type="number" placeholder="%" defaultValue="10" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-black outline-none focus:border-blue-600" onChange={e => setFormData({...formData, retentionRate: e.target.value})} />
+                                                        <input type="number" placeholder="%" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-black outline-none focus:border-blue-600" value={formData.retentionRate} onChange={e => setFormData({...formData, retentionRate: e.target.value})} />
                                                     </div>
                                                     <div className="space-y-1">
                                                         <label className="text-[10px] font-black text-slate-400 ml-1">到期日</label>
-                                                        <input type="date" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-black outline-none focus:border-blue-600" onChange={e => setFormData({...formData, retentionExpiry: e.target.value})} />
+                                                        <input type="date" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-black outline-none focus:border-blue-600" value={formData.retentionExpiry} onChange={e => setFormData({...formData, retentionExpiry: e.target.value})} />
                                                     </div>
                                                 </div>
                                             )}
 
-                                            <button onClick={handleSaveContract} disabled={isSaving} className="w-full py-5 bg-blue-600 text-white font-black rounded-3xl shadow-xl disabled:bg-blue-300 flex justify-center gap-2">
-                                                {isSaving ? <Icon name="loader-2" className="animate-spin" /> : "同步存入雲端"}
+                                            <button onClick={handleSaveContract} disabled={isSaving} className="w-full py-5 bg-blue-600 text-white font-black rounded-3xl shadow-xl disabled:bg-blue-300 flex justify-center gap-2 text-lg">
+                                                {isSaving ? <Icon name="loader-2" className="animate-spin" /> : "確認建立並同步"}
                                             </button>
                                         </>
                                     ) : (
                                         <>
-                                            <input type="number" placeholder="入帳金額" className="w-full p-5 bg-emerald-50 border-2 border-emerald-100 rounded-3xl font-black text-center text-xl outline-none focus:border-emerald-500" onChange={e => setFormData({...formData, amount: e.target.value})} />
-                                            <div className="grid grid-cols-2 gap-4">
-                                                <input type="text" placeholder="發票號碼" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-black uppercase outline-none focus:border-emerald-500" onChange={e => setFormData({...formData, invoiceNo: e.target.value})} />
-                                                <input type="date" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-black outline-none focus:border-emerald-500" onChange={e => setFormData({...formData, invoiceDate: e.target.value})} />
+                                            <div className="space-y-2">
+                                                <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1 text-center block">款項類別</label>
+                                                <div className="flex p-1.5 bg-slate-100 rounded-3xl">
+                                                    <button onClick={() => setFormData({...formData, type: 'owner'})} className={`flex-1 py-3 text-sm font-black rounded-2xl transition-all ${formData.type === 'owner' ? 'bg-white shadow-sm text-emerald-600' : 'text-slate-400'}`}>業主收款</button>
+                                                    <button onClick={() => setFormData({...formData, type: 'vendor'})} className={`flex-1 py-3 text-sm font-black rounded-2xl transition-all ${formData.type === 'vendor' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-400'}`}>廠商付款</button>
+                                                </div>
                                             </div>
-                                            <button onClick={handleSavePayment} disabled={isSaving} className="w-full py-5 bg-emerald-600 text-white font-black rounded-3xl shadow-xl disabled:bg-emerald-300 flex justify-center gap-2">
+
+                                            <div className="space-y-3">
+                                                <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1 text-center block">入帳金額 (NT$)</label>
+                                                <input type="number" placeholder="0" className={`w-full p-6 border-4 rounded-[2.5rem] text-3xl font-black outline-none transition-all shadow-inner font-mono text-center ${formData.type === 'owner' ? 'bg-emerald-50 border-emerald-100 focus:border-emerald-600 text-emerald-600' : 'bg-blue-50 border-blue-100 focus:border-blue-600 text-blue-600'}`} value={formData.amount} onChange={e => setFormData({...formData, amount: e.target.value})} />
+                                            </div>
+
+                                            {formData.type === 'vendor' && (
+                                                <div className="space-y-2 animate-in">
+                                                    <label className="text-xs font-black text-slate-400 uppercase tracking-widest ml-1">廠商名稱</label>
+                                                    <input type="text" placeholder="輸入收款的下包廠商名稱" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-black outline-none focus:border-blue-600" value={formData.vendor} onChange={e => setFormData({...formData, vendor: e.target.value})} />
+                                                </div>
+                                            )}
+
+                                            <div className="grid grid-cols-2 gap-4">
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-black text-slate-400 ml-1">發票號碼</label>
+                                                    <input type="text" placeholder="AB-..." className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-black uppercase outline-none focus:border-slate-300" value={formData.invoiceNo} onChange={e => setFormData({...formData, invoiceNo: e.target.value})} />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-black text-slate-400 ml-1">發票日期</label>
+                                                    <input type="date" className="w-full p-4 bg-slate-50 border-2 rounded-2xl font-black outline-none focus:border-slate-300" value={formData.invoiceDate} onChange={e => setFormData({...formData, invoiceDate: e.target.value})} />
+                                                </div>
+                                            </div>
+                                            
+                                            <button onClick={handleSavePayment} disabled={isSaving} className={`w-full py-5 text-white font-black rounded-3xl shadow-xl transition-all flex justify-center gap-2 text-lg ${formData.type === 'owner' ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-100' : 'bg-blue-600 hover:bg-blue-700 shadow-blue-100'} disabled:bg-slate-300`}>
                                                 {isSaving ? <Icon name="loader-2" className="animate-spin" /> : "確認儲存並同步"}
                                             </button>
                                         </>
